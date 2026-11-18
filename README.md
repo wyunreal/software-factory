@@ -1,101 +1,105 @@
 # Software Factory
 
-Factoría de software basada en agentes de IA. Convierte **GitHub Issues** en Pull
-Requests ejecutando un squad de agentes sobre [OpenCode](https://opencode.ai) y
-manteniendo el workflow bajo el control de un orquestador determinista.
+An AI-agent software factory. It turns **GitHub Issues** into Pull Requests by
+running a squad of agents on [OpenCode](https://opencode.ai), while a
+deterministic orchestrator keeps control of the workflow.
 
-El "Factory Manager" es ese orquestador, no un LLM: los modelos producen
-artefactos y recomendaciones, pero no deciden el estado del ticket ni publican
-cambios por su cuenta.
+The "Factory Manager" is that orchestrator, not an LLM: models produce artifacts
+and recommendations, but they do not decide ticket state or publish changes on
+their own.
 
 ```
-GitHub Issues (mismo repo)
+GitHub Issues + code
+(target repo, not the factory)
       │
       ▼
 Orchestrator ──► Planner ──► Builder ──► QA ──► Tests ──► Reviewer ──► PR
       │             │           │          │        │          │
       └─────────────┴───────────┴──────────┴──────────┴──────────┘
-                  artefactos + estado en PostgreSQL
+                artifacts + state in PostgreSQL
 ```
 
-## Estado actual: Fase 1
+## Current state: Phase 1
 
-Implementado y ejecutable con Docker Compose:
+Implemented and runnable with Docker Compose:
 
-- Un único squad efímero, un ticket cada vez (modelo A).
-- **Webapp** incluida para iniciar una ejecución pasando **repo + URL del issue**.
-- Backlog en **GitHub Issues** del repo objetivo; el repo se resuelve en runtime.
-- Polling automático opcional si configuras `GITHUB_REPOSITORY`/`FACTORY_REPO_URL`.
-- Claim con etiquetas (`factory:in-progress`), comentarios y cierre del issue al
-  mergear el PR.
-- Agentes: **Planner**, **Builder**, **QA**, **Reviewer** sobre OpenCode.
-- Aislamiento por **git worktree** y rama `factory/<ticket>-<run>`.
-- Comandos de build/test por repo mediante `.factory.yml` (o fallback global).
-- Puerta de calidad determinista y veredicto del reviewer.
-- Rework acotado (`FACTORY_MAX_REWORK`).
-- Entrega: push + **Pull Request** en el repo del issue (o modo `local` sin push/PR).
-- Estado, artefactos y eventos persistidos en **PostgreSQL**.
-- API HTTP y webapp para inspeccionar ejecuciones y forzar un tick.
+- A single ephemeral squad, one ticket at a time (model A).
+- **Webapp** included to start a run by passing **repo + issue URL**.
+- Backlog in **GitHub Issues** in the target repo; the repo is resolved at
+  runtime.
+- Optional automatic polling if you configure
+  `GITHUB_REPOSITORY`/`FACTORY_REPO_URL`.
+- Claim via labels (`factory:in-progress`), comments, and issue closure when the
+  PR is merged.
+- Agents: **Planner**, **Builder**, **QA**, **Reviewer** on OpenCode.
+- Isolation via **git worktree** and a `factory/<ticket>-<run>` branch.
+- Per-repo build/test commands via `.factory.yml` (or global fallback).
+- Deterministic quality gate and reviewer verdict.
+- Bounded rework (`FACTORY_MAX_REWORK`).
+- Delivery: push + **Pull Request** in the issue's repo (or `local` mode without
+  push/PR).
+- State, artifacts, and events persisted in **PostgreSQL**.
+- HTTP API and webapp to inspect runs and force a tick.
 
-Fuera de alcance en esta fase: paralelismo, cola distribuida, dashboard
-avanzado, presupuestos y recuperación con leases. Ver
-[`docs/phases.md`](docs/phases.md).
+Out of scope for this phase: parallelism, distributed queue, advanced dashboard,
+budgets, and lease-based recovery. See [`docs/phases.md`](docs/phases.md).
 
-## Requisitos
+## Requirements
 
 - Docker + Docker Compose.
-- Un repositorio en GitHub con Issues activados.
-- Un **Personal Access Token** de GitHub con:
-  - `Issues: read/write` (leer issues, crear etiquetas, comentar)
-  - `Contents: read/write` (clonar y hacer push)
-  - `Pull requests: read/write` (crear PRs)
-  - Para un PAT clásico, el scope `repo` cubre todo.
-- Credenciales de un proveedor de modelos. Para Ollama Cloud:
-  `OLLAMA_API_KEY` (desde <https://ollama.com/settings/keys>).
+- A GitHub repository with Issues enabled.
+- A GitHub **Personal Access Token** with:
+  - `Issues: read/write` (read issues, create labels, comment)
+  - `Contents: read/write` (clone and push)
+  - `Pull requests: read/write` (create PRs)
+  - For a classic PAT, the `repo` scope covers everything.
+- Model provider credentials. For Ollama Cloud:
+  `OLLAMA_API_KEY` (from <https://ollama.com/settings/keys>).
 
-La imagen base incluye Git, Bun, curl y ripgrep. Si el repo objetivo usa Python,
-C++, Go o Node con un runtime propio, añade ese toolchain al `Dockerfile` o usa
-comandos que funcionen con lo que hay. Los comandos salen de `.factory.yml`.
+The base image includes Git, Bun, curl, and ripgrep. If the target repo uses
+Python, C++, Go, or a Node runtime of its own, add that toolchain to the
+`Dockerfile` or use commands that work with what is available. Commands come from
+`.factory.yml`.
 
-## Aislamiento: tu OpenCode local no se toca
+## Isolation: your local OpenCode is untouched
 
-El factory ejecuta **su propio servidor OpenCode dentro de Docker**. Docker Compose
-lo levanta como el servicio `opencode`, en un contenedor hermano del orquestador;
-la factory solo habla con él por HTTP. No reutiliza ni modifica el OpenCode de tu
-máquina:
+The factory runs **its own OpenCode server inside Docker**. Docker Compose starts
+it as the `opencode` service, a sibling container to the orchestrator; the factory
+only talks to it over HTTP. It never reuses or modifies the OpenCode on your
+machine:
 
-| Recurso | Dónde vive |
+| Resource | Where it lives |
 | --- | --- |
-| Config del runtime | `/config/opencode` dentro del contenedor (solo lectura) |
-| Agentes del factory | `./squads/software-development/agents` montado en `/config/opencode/agents` |
-| Datos, sesiones y auth | Volumen Docker `software-factory_factory-data`, en `/data/opencode` |
-| Home del proceso | `/data/opencode/home` |
-| Puerto del servidor | `4096` interno; **no se publica al host** |
-| Credenciales | `OPENCODE_SERVER_PASSWORD` + variables de proveedor del `.env` |
+| Runtime config | `/config/opencode` inside the container (read-only) |
+| Factory agents | `./squads/software-development/agents` mounted at `/config/opencode/agents` |
+| Data, sessions, auth | Docker volume `software-factory_factory-data`, under `/data/opencode` |
+| Process home | `/data/opencode/home` |
+| Server port | `4096` internal; **not published to the host** |
+| Credentials | `OPENCODE_SERVER_PASSWORD` + provider variables from `.env` |
 
-Concretamente, el compose **no** monta `~/.config/opencode`,
-`~/.local/share/opencode` ni `~/.opencode`. Tampoco ejecuta el binario `opencode`
-en el host: el orquestador solo habla HTTP con el contenedor.
+Specifically, the compose file **does not** mount `~/.config/opencode`,
+`~/.local/share/opencode`, or `~/.opencode`. It also does not run the `opencode`
+binary on the host: the orchestrator only talks HTTP to the container.
 
-Puedes comprobarlo con:
+You can verify this with:
 
 ```bash
 docker compose exec opencode sh -lc 'echo "config=$XDG_CONFIG_HOME"; opencode debug paths'
 ```
 
-Debe mostrar `config /config/opencode`, `data /data/opencode/data/opencode`,
-`cache` y `state` dentro de `/data`. Si alguna ruta apunta a `/root` o a un
-directorio del host, algo se ha montado mal.
+It should show `config /config/opencode`, `data /data/opencode/data/opencode`,
+`cache`, and `state` under `/data`. If any path points to `/root` or a host
+directory, something has been mounted incorrectly.
 
-Para autenticar el runtime aislado:
+To authenticate the isolated runtime:
 
 ```bash
 docker compose exec opencode opencode auth login
 ```
 
-Eso escribe en el volumen del factory, no en tu configuración local.
+That writes to the factory volume, not to your local configuration.
 
-## Arranque rápido
+## Quick start
 
 ```bash
 cp .env.example .env
@@ -106,74 +110,75 @@ docker compose ps
 docker compose logs -f factory
 ```
 
-`docker compose up` arranca **cuatro servicios**: `postgres`, `opencode`
-(el runtime aislado de los agentes), `factory` (el orquestador) y `web`
-(la webapp). No hace falta lanzar OpenCode aparte ni usar el OpenCode de tu máquina.
+`docker compose up` starts **four services**: `postgres`, `opencode` (the
+isolated agent runtime), `factory` (the orchestrator), and `web` (the webapp).
+You do not need to start OpenCode separately or use your machine's OpenCode.
 
 ```
-┌─────────────────────── red interna de Docker ───────────────────────┐
-│  postgres  ◄──── factory ────HTTP───►  opencode (runtime aislado)   │
+┌─────────────────────── Docker internal network ────────────────────┐
+│  postgres  ◄──── factory ────HTTP───►  opencode (isolated runtime) │
 │                      ▲                                             │
 │                      │ /api/*                                      │
-│                    web ◄──── navegador                               │
+│                    web ◄──── browser                                │
 └─────────────────────────────────────────────────────────────────────┘
         │                              │
  127.0.0.1:8080                  127.0.0.1:13000
- (webapp)                       (API del factory)
+ (webapp)                       (factory API)
 ```
 
-| Servicio | Qué es | Puerto en el host |
+| Service | What it is | Host port |
 | --- | --- | --- |
-| `postgres` | estado, artefactos y eventos | ninguno |
-| `opencode` | runtime aislado de los agentes | ninguno |
-| `factory` | orquestador y API | `127.0.0.1:3000` (`FACTORY_HOST_PORT`) |
-| `web` | webapp para iniciar runs | `127.0.0.1:8080` (`WEB_HOST_PORT`) |
+| `postgres` | state, artifacts, events | none |
+| `opencode` | isolated agent runtime | none |
+| `factory` | orchestrator and API | `127.0.0.1:3000` (`FACTORY_HOST_PORT`) |
+| `web` | webapp to start runs | `127.0.0.1:8080` (`WEB_HOST_PORT`) |
 
-La factory espera a que `opencode` esté sano antes de arrancar. El puerto `4096`
-del runtime es interno de la red de Compose; no se publica y no puede chocar con
-tu OpenCode local.
+The factory waits for `opencode` to be healthy before starting. The runtime's
+`4096` port is internal to the Compose network; it is not published and cannot
+conflict with your local OpenCode.
 
-Comprueba que todo está sano:
+Check that everything is healthy:
 
 ```bash
 curl -s http://127.0.0.1:13000/health | jq
 docker compose exec factory bun run scripts/opencode-check.ts
 ```
 
-Abre la webapp en:
+Open the webapp at:
 
 ```text
 http://127.0.0.1:8080
 ```
 
-Si usas autenticación interactiva en lugar de variables de entorno:
+If you use interactive authentication instead of environment variables:
 
 ```bash
 docker compose exec opencode opencode auth login
 ```
 
-## Iniciar un run desde la webapp
+## Starting a run from the webapp
 
-La webapp está en <http://127.0.0.1:8080>. Rellena:
+The webapp is at <http://127.0.0.1:8080>. Fill in:
 
-- **Repositorio**: `https://github.com/owner/app`
-- **URL del issue**: `https://github.com/owner/app/issues/123`
-- **Rama base**: normalmente `main`
-- Opcional: comandos de setup/test solo para esta ejecución
+- **Repository**: `https://github.com/owner/app`
+- **Issue URL**: `https://github.com/owner/app/issues/123`
+- **Base branch**: usually `main`
+- Optional: setup/test commands for this run only
 
-La factoría:
+The factory:
 
-1. valida que el issue y el repo sean el mismo;
-2. consulta el issue con `GITHUB_TOKEN`;
-3. clona el repo, crea un worktree aislado y lee `.factory.yml`;
-4. ejecuta Planner → Builder → QA → Tests → Reviewer;
-5. comenta/etiqueta el issue y, si `FACTORY_DELIVERY_MODE=github`, abre el PR.
+1. validates that the issue and repo match;
+2. fetches the issue with `GITHUB_TOKEN`;
+3. clones the repo, creates an isolated worktree, and reads `.factory.yml`;
+4. runs Planner → Builder → QA → Tests → Reviewer;
+5. comments on/labels the issue and, if `FACTORY_DELIVERY_MODE=github`, opens the
+   PR.
 
-No hay que poner el repo en el issue: la webapp lo pasa explícitamente.
+You do not put the repo in the issue: the webapp passes it explicitly.
 
-### `.factory.yml` en el repo objetivo
+### `.factory.yml` in the target repo
 
-Los comandos de build/test se leen del propio repo, en la rama base:
+Build/test commands are read from the repository itself, on the base branch:
 
 ```yaml
 # .factory.yml
@@ -181,94 +186,95 @@ setup: bun install
 test: bun test
 ```
 
-Si el archivo no existe, se usan `FACTORY_SETUP_CMD` y `FACTORY_TEST_CMD` como
-fallback. Si no hay comando de tests, la puerta determinista se omite.
+If the file does not exist, `FACTORY_SETUP_CMD` and `FACTORY_TEST_CMD` are used
+as fallbacks. If there is no test command, the deterministic gate is skipped.
 
-Así el repo es dueño de su toolchain y no hay que hardcodear comandos por
-proyecto en el motor.
+This way the repo owns its toolchain and you do not hardcode per-project
+commands in the engine.
 
-### Token de GitHub
+### GitHub token
 
-`GITHUB_TOKEN` es obligatorio. Permisos:
+`GITHUB_TOKEN` is required. Permissions:
 
 - **Issues**: read/write
 - **Contents**: read/write
 - **Pull requests**: read/write
-- **Metadata**: read (automático)
+- **Metadata**: read (automatic)
 
-**Sí, se puede limitar a un solo repo.** Para eso usa un **fine-grained PAT**:
+**Yes, it can be restricted to a single repo.** Use a **fine-grained PAT**:
 
 ```text
-Repository access → Only select repositories → tu-repo
+Repository access → Only select repositories → your-repo
 ```
 
-Un PAT clásico con scope `repo` da acceso a todos los repos a los que llega el
-usuario; no se puede limitar por repositorio. Por eso, para producción/local con
-un solo repo, usa fine-grained.
+A classic PAT with the `repo` scope grants access to every repo the user can
+reach; it cannot be restricted per repository. For production/local use with a
+single repo, use fine-grained tokens.
 
-Si el repo está en una organización que restringe fine-grained PATs, el token
-puede requerir aprobación del owner de la organización.
+If the repo belongs to an organization that restricts fine-grained PATs, the
+token may require approval from the organization owner.
 
-Si limitas el token a un repo, pon también:
+If you restrict the token to one repo, also set:
 
 ```env
-FACTORY_ALLOWED_REPOS=owner/tu-repo
+FACTORY_ALLOWED_REPOS=owner/your-repo
 ```
 
-Así la webapp rechaza cualquier otro repo antes de intentar clonarlo.
+This makes the webapp reject any other repo before attempting to clone it.
 
-### Allowlist de repos
+### Repository allowlist
 
-Si quieres limitar qué repos puede usar la webapp:
+To limit which repos the webapp can use:
 
 ```env
 FACTORY_ALLOWED_REPOS=owner/app,owner/other
 ```
 
-Vacío = cualquier repo al que el token tenga acceso. En local es cómodo; en un
-entorno compartido, define la allowlist.
+Empty = any repo the token can access. This is convenient locally; in a shared
+environment, define the allowlist.
 
-### Polling opcional
+### Optional polling
 
-La webapp es la vía principal. Si además quieres que la factoría descubra issues
-sola, define un repo por defecto:
+The webapp is the main path. If you also want the factory to discover issues on
+its own, define a default repo:
 
 ```env
 GITHUB_REPOSITORY=owner/app
 FACTORY_REPO_URL=https://github.com/owner/app.git
 ```
 
-Con eso, los issues abiertos sin etiqueta de estado se procesan automáticamente.
-Sin esas variables, solo se ejecutan los runs lanzados desde la webapp o la API.
+With that, open issues without a state label are processed automatically.
+Without those variables, only runs started from the webapp or API are executed.
 
-### Modelo y proveedor
+### Model and provider
 
-El modelo **no se configura en la webapp**. Se define de forma estática en `.env`
-y se aplica a todas las sesiones cuando arrancas/recreas la factory.
+The model is **not configured in the webapp**. It is defined statically in `.env`
+and applies to every session when you start/recreate the factory.
 
-Para Ollama Cloud:
+For Ollama Cloud:
 
 ```env
-OLLAMA_API_KEY=tu_api_key_de_ollama
+OLLAMA_API_KEY=your_ollama_api_key
 FACTORY_MODEL=ollama-cloud/deepseek-v4.1-flash:1017
 ```
 
-- La API key se obtiene en <https://ollama.com/settings/keys>.
-- OpenCode trae el provider `ollama-cloud` integrado, con base
-  `https://ollama.com/v1`; no hace falta definir un provider a mano.
-- La key se pasa al contenedor `opencode` por `env_file`; no se hornea en la imagen.
-- Si falta la key o el modelo no existe, la factory falla al arrancar con
-  `Model ollama-cloud/... is not available`.
-- Para cambiar de modelo, edita `FACTORY_MODEL` y recrea:
+- Get the API key at <https://ollama.com/settings/keys>.
+- OpenCode ships the `ollama-cloud` provider with base URL
+  `https://ollama.com/v1`; you do not need to define a provider manually.
+- The key is passed to the `opencode` container through Compose environment
+  variables (from `.env`); it is not baked into the image.
+- If the key is missing or the model does not exist, the factory fails at
+  startup with `Model ollama-cloud/... is not available`.
+- To change models, edit `FACTORY_MODEL` and recreate:
 
 ```bash
 docker compose up -d --force-recreate factory
 ```
 
-Alternativas:
+Alternatives:
 
 ```env
-# Free de OpenCode, sin API key
+# OpenCode free model, no API key
 FACTORY_MODEL=opencode/hy4-flash-free
 
 # Anthropic
@@ -278,108 +284,113 @@ ANTHROPIC_API_KEY=...
 
 ### Auto-merge
 
-La PR se crea solo si el Reviewer LLM da `PASS`. El auto-merge es una segunda
-puerta, humana, sobre la PR ya creada:
+The PR is created only when the LLM Reviewer returns `PASS`. Auto-merge is a
+second, human gate on top of the already-created PR:
 
 ```env
 FACTORY_AUTO_MERGE=true
 FACTORY_MERGE_METHOD=squash   # merge | squash | rebase
 ```
 
-La factoría mergea cuando:
+The factory merges when:
 
-- hay al menos una review de GitHub en estado `APPROVED`;
-- ningún reviewer tiene `CHANGES_REQUESTED` como última review decisiva;
-- la PR está abierta, no es draft y GitHub la considera `mergeable` con
+- there is at least one GitHub review in `APPROVED` state;
+- no reviewer has `CHANGES_REQUESTED` as their latest decisive review;
+- the PR is open, not a draft, and GitHub considers it `mergeable` with
   `mergeable_state = clean`;
-- se cumple lo que exija la branch protection del repo.
+- the repository's branch protection requirements are satisfied.
 
-Si algo falla, la PR se queda en `HUMAN_REVIEW` y no se mergea. El merge usa el
-SHA de cabeza actual para no mergear un commit distinto del revisado.
+If anything fails, the PR stays in `HUMAN_REVIEW` and is not merged. The merge
+uses the current head SHA, so it cannot merge a different commit from the one
+that was reviewed.
 
-El auto-merge se comprueba en cada ciclo de polling. La review LLM del factory
-no cuenta como review de GitHub; hace falta una aprobación humana real.
+Auto-merge is checked on every polling cycle. The factory's LLM review does not
+count as a GitHub review; a real human approval is required.
 
-### Rework por review humana
+If the factory uses the same GitHub user as you, GitHub will not let that user
+approve its own PR. Use a bot account or a GitHub App for the factory, or a
+second reviewer.
 
-Si un humano envía una review con `CHANGES_REQUESTED`, la factoría reabre el
-desarrollo en el **mismo run, rama y PR**:
+### Rework from human review
+
+If a human submits a review with `CHANGES_REQUESTED`, the factory reopens
+development on the **same run, branch, and PR**:
 
 ```env
 FACTORY_REWORK_ON_CHANGES_REQUESTED=true
 ```
 
-1. Detecta la review y sus comentarios inline.
-2. Guarda el feedback como artefacto `feedback`.
-3. Pasa el run a `REWORK` y vuelve a `BUILDING`.
-4. El Builder recibe el feedback humano junto al plan y los artefactos previos.
-5. QA, tests y Reviewer vuelven a ejecutarse.
-6. Push a la misma rama: la PR se actualiza, no se crea otra.
-7. La factoría responde a los comentarios inline y publica un comentario en la
-   PR pidiendo re-review.
-8. El auto-merge sigue esperando una review `APPROVED`.
+1. Detect the review and its inline comments.
+2. Store the feedback as a `feedback` artifact.
+3. Move the run to `REWORK` and back to `BUILDING`.
+4. The Builder receives the human feedback along with the plan and previous
+   artifacts.
+5. QA, tests, and the Reviewer run again.
+6. Push to the same branch: the PR is updated, not recreated.
+7. The factory replies to inline comments and posts a PR comment requesting
+   re-review.
+8. Auto-merge keeps waiting for an `APPROVED` review.
 
-Se deduplican reviews por ID y se respeta `FACTORY_MAX_REWORK`. Al agotarse, el
-run pasa a `BLOCKED`.
+Reviews are deduplicated by ID and `FACTORY_MAX_REWORK` is respected. When it is
+exhausted, the run moves to `BLOCKED`.
 
-### Triage de comentarios
+### Comment triage
 
-Un comentario nuevo en la PR no reabre el desarrollo directamente: pasa por un
-agente de triage que decide si hay trabajo real.
+A new PR comment does not reopen development directly: it goes through a triage
+agent that decides whether there is real work to do.
 
 ```env
 FACTORY_TRIAGE_PR_COMMENTS=true
-FACTORY_FEEDBACK_USERS=          # vacío = OWNER/MEMBER/COLLABORATOR
+FACTORY_FEEDBACK_USERS=          # empty = OWNER/MEMBER/COLLABORATOR
 ```
 
-Flujo:
+Flow:
 
 ```text
-comentario -> TRIAGING -> NO_ACTION -> HUMAN_REVIEW
-                       -> REWORK    -> misma rama/PR
+comment -> TRIAGING -> NO_ACTION -> HUMAN_REVIEW
+                    -> REWORK    -> same branch/PR
 ```
 
-- `NO_ACTION` para “GOOD”, “thanks”, “LGTM” o comentarios ya resueltos.
-- `REWORK` para bugs, cambios de comportamiento, tests que faltan o peticiones
-  concretas.
-- El triage puede procesar varios comentarios y decidir por cada uno.
-- Los comentarios de la factory se ignoran por ID; los comentarios de usuarios
-  no permitidos también.
-- Un `CHANGES_REQUESTED` sigue yendo directo a `REWORK`, sin triage.
+- `NO_ACTION` for “GOOD”, “thanks”, “LGTM”, or already-resolved comments.
+- `REWORK` for bugs, behavior changes, missing tests, or concrete requests.
+- Triage can process several comments and decide per comment.
+- Factory comments are ignored by ID; comments from disallowed users are also
+  ignored.
+- `CHANGES_REQUESTED` still goes straight to `REWORK`, without triage.
 
-### El issue
+### The issue
 
-Crea un issue abierto en el repo objetivo. No hace falta ponerle etiqueta:
-un issue abierto sin etiqueta de estado y sin `factory:skip` es **Ready**.
+Create an open issue in the target repo. No label is required: an open issue
+without a state label and without `factory:skip` is **Ready**.
 
-Ejemplo de body:
+Example body:
 
 ```markdown
-Arreglar el login para que rechace contraseñas vacías.
+Fix login so it rejects empty passwords.
 
-## Criterios de aceptación
-- [ ] Un usuario válido puede iniciar sesión
-- [ ] Las credenciales inválidas se rechazan con 401
-- [ ] La sesión expira a las 24 horas
+## Acceptance criteria
+- [ ] A valid user can sign in
+- [ ] Invalid credentials are rejected with 401
+- [ ] The session expires after 24 hours
 ```
 
-Los criterios se leen del body; también valen listas normales con `-`.
+Criteria are read from the body; plain `-` lists also work.
 
-Etiquetas que usa la factoría:
+Labels used by the factory:
 
-| Etiqueta | Significado |
+| Label | Meaning |
 | --- | --- |
-| `factory:in-progress` | la factoría lo ha reclamado |
-| `factory:in-review` | hay PR / entrega lista para humano |
-| `factory:blocked` | necesita intervención humana |
-| `factory:skip` | ignorar este issue |
+| `factory:in-progress` | the factory has claimed it |
+| `factory:in-review` | there is a PR / delivery ready for a human |
+| `factory:blocked` | it needs human intervention |
+| `factory:skip` | ignore this issue |
 
-Los pull requests se ignoran automáticamente: la API de issues de GitHub los
-devuelve mezclados, pero el adaptador los filtra.
+Pull requests are ignored automatically: the GitHub issues API returns them
+mixed in, but the adapter filters them out.
 
-## Probar en local
+## Testing locally
 
-### 1. Tests rápidos, sin Docker ni OpenCode
+### 1. Fast tests, no Docker or OpenCode
 
 ```bash
 bun install
@@ -387,11 +398,11 @@ bun test
 bun run typecheck
 ```
 
-Estos tests cubren la máquina de estados, el parser de issues, la configuración,
-el adaptador de GitHub Issues (con API simulada) y el workflow completo con dobles
-en memoria. No arrancan ningún agente ni tocan tu OpenCode.
+These tests cover the state machine, issue parser, configuration, GitHub Issues
+adapter (with a mocked API), and the full workflow with in-memory doubles. They
+do not start any agents or touch your OpenCode.
 
-### 2. Levantar el stack aislado
+### 2. Start the isolated stack
 
 ```bash
 cp .env.example .env
@@ -401,53 +412,55 @@ docker compose ps
 docker compose logs -f opencode factory
 ```
 
-El primer arranque construye la imagen (incluye Git, Bun y OpenCode) y arranca
-el servidor OpenCode aislado. El repo objetivo se clona en `factory-data` cuando
-lanzas el primer run. No hay ningún paso manual de “arrancar OpenCode”: lo hace
-Compose.
+The first start builds the image (including Git, Bun, and OpenCode) and starts
+the isolated OpenCode server. The target repo is cloned into `factory-data` when
+you start the first run. There is no manual “start OpenCode” step: Compose does
+it.
 
-### 3. Comprobar que el runtime es el aislado
+### 3. Verify the runtime is isolated
 
 ```bash
 docker compose exec opencode sh -lc 'opencode debug paths'
 docker compose exec factory bun run scripts/opencode-check.ts
 ```
 
-`debug paths` debe mostrar `config` en `/config/opencode` y `data`, `cache` y
-`state` bajo `/data/opencode`. `opencode-check` imprime la URL que está usando;
-si no defines `FACTORY_OPENCODE_URL`, falla en vez de asumir `127.0.0.1:4096`.
+`debug paths` should show `config` under `/config/opencode` and `data`, `cache`,
+and `state` under `/data/opencode`. `opencode-check` prints the URL it is using;
+if `FACTORY_OPENCODE_URL` is not set, it fails instead of assuming
+`127.0.0.1:4096`.
 
-### 4. Validar GitHub (opcional si usas la webapp)
+### 4. Validate GitHub (optional when using the webapp)
 
-Si vas a usar polling automático (con `GITHUB_REPOSITORY`/`FACTORY_REPO_URL`):
+If you are going to use automatic polling (with
+`GITHUB_REPOSITORY`/`FACTORY_REPO_URL`):
 
 ```bash
 docker compose exec factory bun run scripts/github-check.ts
 ```
 
-Debe validar el repo, crear las etiquetas que falten y listar los issues que
-serían reclamados. En modo webapp puedes saltarte este paso; la validación se
-hace al iniciar cada run.
+It should validate the repo, create any missing labels, and list the issues that
+would be claimed. In webapp mode you can skip this step; validation happens when
+each run starts.
 
-### 5. Prueba end-to-end sin publicar PR
+### 5. End-to-end test without publishing a PR
 
-Usa `FACTORY_DELIVERY_MODE=local` (ya está así en `.env`) para que no haga push
-ni cree PR, pero sí etiquete y comente el issue.
+Set `FACTORY_DELIVERY_MODE=local` for this test so it does not push or
+create a PR, but still labels and comments on the issue.
 
-1. Abre <http://127.0.0.1:8080>.
-2. Rellena:
-   - Repositorio: `https://github.com/owner/app`
+1. Open <http://127.0.0.1:8080>.
+2. Fill in:
+   - Repository: `https://github.com/owner/app`
    - Issue: `https://github.com/owner/app/issues/123`
-   - Rama base: `main`
-3. Pulsa **Iniciar desarrollo**.
-4. Observa el progreso en la propia webapp o en:
+   - Base branch: `main`
+3. Click **Start development**.
+4. Watch progress in the webapp or with:
 
 ```bash
 docker compose logs -f factory
 curl -s http://127.0.0.1:13000/api/runs | jq
 ```
 
-5. Inspecciona la ejecución y sus artefactos:
+5. Inspect the run and its artifacts:
 
 ```bash
 RUN_ID=$(curl -s http://127.0.0.1:13000/api/runs | jq -r '.data[0].id')
@@ -455,40 +468,40 @@ curl -s "http://127.0.0.1:13000/api/runs/$RUN_ID" \
   | jq '{state: .data.state, repoUrl: .data.repoUrl, worktree: .data.worktree, artifacts: [.data.artifacts[].name]}'
 ```
 
-6. Inspecciona el trabajo generado:
+6. Inspect the generated work:
 
 ```bash
 docker compose exec factory sh -lc \
   'cd /data/worktrees/* && git log --oneline --decorate && git diff main...HEAD --stat'
 ```
 
-7. El issue debe quedar con `factory:in-review` y un comentario de la factoría.
+7. The issue should end up with `factory:in-review` and a factory comment.
 
-### 6. Prueba end-to-end con Pull Request
+### 6. End-to-end test with a Pull Request
 
-Cambia a `FACTORY_DELIVERY_MODE=github`:
+Change to `FACTORY_DELIVERY_MODE=github`:
 
 ```bash
 docker compose up -d --force-recreate factory
 ```
 
-Lanza un run nuevo desde la webapp con otro issue. Al terminar debe aparecer un
-PR **en el repo del issue**, con:
+Start a new run from the webapp with another issue. When it finishes, a PR should
+appear **in the issue's repo**, with:
 
-- el plan, el informe del builder, QA, tests y review en el cuerpo;
-- la referencia `Closes #<issue>`, de modo que el merge cierre el issue;
-- la rama `factory/<ticket>-<run>`.
+- the plan, builder report, QA, tests, and review in the body;
+- the `Closes #<issue>` reference, so merging closes the issue;
+- the `factory/<ticket>-<run>` branch.
 
-El token necesita `Contents: write` y `Pull requests: write`.
+The token needs `Contents: write` and `Pull requests: write`.
 
-Cuando el PR se mergea y GitHub cierra el issue, la factoría marca la ejecución
-como `DONE` en el siguiente poll.
+When the PR is merged and GitHub closes the issue, the factory marks the run as
+`DONE` on the next poll.
 
-### 7. Desarrollo del orquestador en el host
+### 7. Developing the orchestrator on the host
 
-Este apartado es **solo** para modificar el código del orquestador ejecutándolo
-con Bun en tu máquina. En el flujo normal no lo necesitas: `docker compose up`
-ya levanta OpenCode y la factory.
+This section is **only** for modifying the orchestrator code by running it with
+Bun on your machine. In the normal flow you do not need it: `docker compose up`
+already starts OpenCode and the factory.
 
 ```bash
 mkdir -p .factory-dev
@@ -496,70 +509,71 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d postgres opencode
 
 FACTORY_DATA_DIR="$PWD/.factory-dev" \
 FACTORY_OPENCODE_URL=http://127.0.0.1:14096 \
-DATABASE_URL=postgres://factory:factory@127.0.0.1:15432/factory \
+DATABASE_URL=postgres://factory:TU_PASSWORD@127.0.0.1:15432/factory \
 bun run src/index.ts
 ```
 
-`compose.dev.yaml` monta `.factory-dev` en el contenedor en la misma ruta
-absoluta, de modo que los worktrees que crea el proceso del host son visibles
-para los agentes. No arranques el servicio `factory` de Compose a la vez que el
-proceso del host: dos workers compartirían la misma base de datos.
+`compose.dev.yaml` mounts `.factory-dev` into the container at the same absolute
+path, so worktrees created by the host process are visible to the agents. Do not
+run the Compose `factory` service at the same time as the host process: two
+workers would share the same database.
 
-### 8. Limpieza
+### 8. Cleanup
 
 ```bash
-docker compose down          # conserva la base de datos y los worktrees
-docker compose down -v       # borra todo el estado del factory
+docker compose down          # keeps the database and worktrees
+docker compose down -v       # deletes all factory state
 ```
 
-`down -v` elimina el volumen `factory-data` y con él las credenciales, sesiones,
-clones y worktrees del runtime aislado. No afecta a tu OpenCode local.
+`down -v` removes the `factory-data` volume and, with it, the isolated runtime's
+credentials, sessions, clones, and worktrees. It does not affect your local
+OpenCode.
 
-### Problemas frecuentes
+### Troubleshooting
 
-| Síntoma | Causa probable | Solución |
+| Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `OpenCode ... 401` | password distinta entre servicios | usa el mismo `.env`; reinicia con `docker compose up -d --force-recreate` |
-| `GitHub ... 401` | token inválido | regenera el PAT |
-| `GitHub ... 403` | token sin permisos | concede Issues, Contents y Pull requests |
-| `GitHub ... 404` | repo mal escrito o sin acceso | revisa la URL del repo/issue |
-| `Repository mismatch` | repo y issue son de repos distintos | usa el repo donde vive el issue |
-| `Issue #N is closed` | el issue ya está cerrado | usa un issue abierto |
-| La webapp devuelve 502 | la factory no está arriba | `docker compose ps` y `docker compose logs factory` |
-| El issue no se procesa en polling | etiqueta de estado, `factory:skip` o repo por defecto no configurado | revisa etiquetas y `/api/runs` |
-| `Setup command failed` | dependencias o toolchain ausente | amplía el `Dockerfile` o corrige `FACTORY_SETUP_CMD` |
-| Tests rojos siempre | faltan dependencias o el comando no existe en la imagen | prueba `docker compose exec factory sh -lc '<cmd>'` |
-| `Builder produced no changes` | el agente no modificó nada | revisa el artefacto `build` |
-| `Bind for 0.0.0.0:3000 failed` | otro proceso usa el puerto 3000 | define `FACTORY_HOST_PORT=13000` |
-| `Bind for 0.0.0.0:8080 failed` | otro proceso usa el puerto 8080 | define `WEB_HOST_PORT=8081` |
-| `Location not found` | ruta del worktree no visible desde OpenCode | no montes rutas del host; usa el volumen `/data` |
+| `OpenCode ... 401` | password differs between services | use the same `.env`; restart with `docker compose up -d --force-recreate` |
+| `GitHub ... 401` | invalid token | regenerate the PAT |
+| `GitHub ... 403` | token lacks permissions | grant Issues, Contents, and Pull requests |
+| `GitHub ... 404` | repo misspelled or inaccessible | check the repo/issue URL |
+| `Repository mismatch` | repo and issue belong to different repos | use the repo where the issue lives |
+| `Issue #N is closed` | the issue is already closed | use an open issue |
+| Webapp returns 502 | the factory is not up | `docker compose ps` and `docker compose logs factory` |
+| Issue is not processed by polling | state label, `factory:skip`, or no default repo | check labels and `/api/runs` |
+| `Setup command failed` | missing dependencies or toolchain | extend the `Dockerfile` or fix `FACTORY_SETUP_CMD` |
+| Tests always red | missing dependencies or command not present in the image | test with `docker compose exec factory sh -lc '<cmd>'` |
+| `Builder produced no changes` | the agent changed nothing | inspect the `build` artifact |
+| `Bind for 0.0.0.0:3000 failed` | another process uses port 3000 | set `FACTORY_HOST_PORT=13000` |
+| `Bind for 0.0.0.0:8080 failed` | another process uses port 8080 | set `WEB_HOST_PORT=8081` |
+| `Location not found` | worktree path not visible from OpenCode | do not mount host paths; use the `/data` volume |
 
-## Cómo funciona una ejecución
+## How a run works
 
-1. La webapp o `POST /api/runs` recibe **repo + URL del issue** y crea una
-   ejecución (`CLAIMED`). Opcionalmente, el poller puede descubrir issues si
-   configuras un repo por defecto.
-2. La factoría valida que issue y repo coincidan, consulta el issue y aplica
-   `factory:in-progress` + comentario.
-3. Clona el repo objetivo y crea un worktree aislado en el volumen
-   `factory-data`.
-4. Lee `.factory.yml` de la rama base para resolver setup/test.
-5. **Planner** explora el repo y produce `plan`.
-6. **Builder** implementa y deja los cambios sin commitear. El orquestador hace
-   el commit; a los agentes se les prohíbe reescribir historia por prompt y por
-   permisos.
-7. **QA** añade/repasa tests (solo puede editar ficheros de test).
-8. El orquestador ejecuta el comando de tests resuelto. Si falla, vuelve a
-   `BUILDING` con el output como feedback, hasta `FACTORY_MAX_REWORK` veces.
-9. **Reviewer** revisa el diff y responde `VERDICT: PASS` o `VERDICT: FAIL`.
-   Un FAIL también consume un ciclo de rework.
-10. En `DELIVERY` se hace push de la rama y se crea el PR en el repo del issue,
-    con `Closes #<issue>` en el cuerpo.
-11. El issue se etiqueta con `factory:in-review` y la ejecución queda en
-    `HUMAN_REVIEW`. Cuando el PR se mergea y el issue se cierra, el poller pasa
-    la ejecución a `DONE`.
+1. The webapp or `POST /api/runs` receives **repo + issue URL** and creates a
+   run (`CLAIMED`). Optionally, the poller can discover issues if you configure a
+   default repo.
+2. The factory validates that issue and repo match, fetches the issue, and
+   applies `factory:in-progress` + a comment.
+3. It clones the target repo and creates an isolated worktree in the
+   `factory-data` volume.
+4. It reads `.factory.yml` from the base branch to resolve setup/test.
+5. **Planner** explores the repo and produces `plan`.
+6. **Builder** implements and leaves changes uncommitted. The orchestrator makes
+   the commit; agents are forbidden from rewriting history by prompt and
+   permissions.
+7. **QA** adds/reviews tests (it may only edit test files).
+8. The orchestrator runs the resolved test command. If it fails, it returns to
+   `BUILDING` with the output as feedback, up to `FACTORY_MAX_REWORK` times.
+9. **Reviewer** reviews the diff and returns `VERDICT: PASS` or `VERDICT: FAIL`.
+   A FAIL also consumes a rework cycle.
+10. In `DELIVERY` the branch is pushed and a PR is created in the issue's repo,
+    with `Closes #<issue>` in the body.
+11. The issue is labeled `factory:in-review` and the run stays in
+    `HUMAN_REVIEW`. When the PR is merged and the issue is closed, the poller
+    moves the run to `DONE`.
 
-Diagrama de estados:
+State diagram:
 
 ```
 CLAIMED → PLANNING → PLANNED → BUILDING → QA → TESTING → REVIEWING → DELIVERY
@@ -572,40 +586,40 @@ CLAIMED → PLANNING → PLANNED → BUILDING → QA → TESTING → REVIEWING �
                                                                      ▼
                                                                     DONE
 
-Cualquier estado activo puede terminar en BLOCKED.
+Any active state can end in BLOCKED.
 ```
 
-## Artefactos
+## Artifacts
 
-Cada paso deja un artefacto persistido en PostgreSQL y visible por API:
+Each step leaves an artifact persisted in PostgreSQL and visible through the API:
 
-| Artefacto  | Productor        | Contenido                                      |
-| ---------- | ---------------- | ---------------------------------------------- |
-| `plan`     | Planner          | análisis, criterios, tareas, riesgos           |
-| `build`    | Builder          | resumen, cambios, pruebas ejecutadas           |
-| `qa`       | QA               | plan de pruebas, tests añadidos, resultado     |
-| `tests`    | Orquestador      | salida literal de `FACTORY_TEST_CMD`           |
-| `review`   | Reviewer         | veredicto y hallazgos                          |
-| `delivery` | Orquestador      | URL del PR o ruta de la rama en modo local     |
+| Artifact | Producer | Content |
+| --- | --- | --- |
+| `plan` | Planner | analysis, criteria, tasks, risks |
+| `build` | Builder | summary, changes, tests run |
+| `qa` | QA | test plan, added tests, result |
+| `tests` | Orchestrator | raw output of `FACTORY_TEST_CMD` |
+| `review` | Reviewer | verdict and findings |
+| `delivery` | Orchestrator | PR URL or branch path in local mode |
 
-Los agentes se comunican mediante estos artefactos, no solo por conversación.
+Agents communicate through these artifacts, not only through conversation.
 
 ## API
 
-La API escucha en `127.0.0.1:${FACTORY_HOST_PORT}` (en el `.env` de ejemplo,
-`13000` porque el 3000 puede estar ocupado). Si defines `FACTORY_API_TOKEN`,
-envía `Authorization: Bearer <token>` en las rutas `/api/*`.
+The API listens on `127.0.0.1:${FACTORY_HOST_PORT}`. The local `.env` uses
+`13000` because 3000 may be taken; adjust it to your own value. If you set
+`FACTORY_API_TOKEN`, send `Authorization: Bearer <token>` on `/api/*` routes.
 
-| Método | Ruta              | Descripción                                  |
-| ------ | ----------------- | -------------------------------------------- |
-| GET    | `/health`         | estado de PostgreSQL, OpenCode y orquestador |
-| GET    | `/api/status`     | estadísticas y flags del orquestador         |
-| GET    | `/api/runs`       | últimas ejecuciones (`?limit=`)              |
-| GET    | `/api/runs/:id`   | ejecución + artefactos + eventos             |
-| POST   | `/api/runs`       | inicia un run con `repoUrl` + `issueUrl`      |
-| POST   | `/api/tick`       | fuerza un ciclo de polling y trabajo         |
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/health` | PostgreSQL, OpenCode, and orchestrator status |
+| GET | `/api/status` | orchestrator statistics and flags |
+| GET | `/api/runs` | latest runs (`?limit=`) |
+| GET | `/api/runs/:id` | run + artifacts + events |
+| POST | `/api/runs` | start a run with `repoUrl` + `issueUrl` |
+| POST | `/api/tick` | force a polling and work cycle |
 
-Ejemplo:
+Example:
 
 ```bash
 curl -s -X POST http://127.0.0.1:13000/api/runs \
@@ -617,89 +631,88 @@ curl -s -X POST http://127.0.0.1:13000/api/runs \
   }' | jq
 ```
 
-Opcionalmente acepta `setupCommand` y `testCommand` para esa ejecución; si no,
-se usan `.factory.yml`, `FACTORY_SETUP_CMD` y `FACTORY_TEST_CMD`.
+It optionally accepts `setupCommand` and `testCommand` for that run; otherwise
+`.factory.yml`, `FACTORY_SETUP_CMD`, and `FACTORY_TEST_CMD` are used.
 
-## Agentes
+## Agents
 
-Los perfiles viven en `squads/software-development/agents/` y se montan en el
-contenedor de OpenCode como agentes globales. No se escriben dentro del repo
-objetivo.
+Profiles live in `squads/software-development/agents/` and are mounted into the
+OpenCode container as global agents. They are not written into the target repo.
 
-| Agente             | Permisos                                                    |
-| ------------------ | ----------------------------------------------------------- |
-| `factory-planner`  | solo lectura (`read`, `glob`, `grep`); sin shell ni edición |
-| `factory-builder`  | lectura, edición y shell; sin subagentes                     |
-| `factory-qa`       | shell + edición limitada a ficheros de test                  |
-| `factory-reviewer` | solo lectura + `git` de solo lectura; sin edición general    |
-| `factory-feedback-triage` | solo lectura + `git`; decide `NO_ACTION` o `REWORK`    |
-
-El orquestador crea una sesión de OpenCode por paso. Los agentes son perfiles
-persistentes; las sesiones y los worktrees son efímeros.
-
-## Configuración
-
-Todas las variables están documentadas en [`.env.example`](.env.example).
-Las más importantes:
-
-| Variable                 | Por defecto        | Descripción                                  |
-| ------------------------ | ------------------ | -------------------------------------------- |
-| `GITHUB_TOKEN`           | — (obligatoria)    | PAT con Issues, Contents y Pull requests     |
-| `GITHUB_REPOSITORY`      | vacío              | repo para polling automático (opcional)      |
-| `FACTORY_REPO_URL`       | vacío              | URL del repo de polling (opcional)           |
-| `FACTORY_ALLOWED_REPOS`  | vacío              | allowlist `owner/repo` separada por comas    |
-| `FACTORY_BASE_BRANCH`    | `main`             | rama base por defecto                        |
-| `FACTORY_TEST_CMD`       | vacío              | fallback si el repo no tiene `.factory.yml`  |
-| `FACTORY_SETUP_CMD`      | vacío              | fallback de instalación                      |
-| `FACTORY_MAX_REWORK`     | `3`                | ciclos máximos de corrección                 |
-| `FACTORY_DELIVERY_MODE`  | `github`           | `github` o `local`                           |
-| `FACTORY_AUTO_MERGE`     | `false`            | mergea PRs con review APPROVED                |
-| `FACTORY_MERGE_METHOD`   | `squash`           | `merge`, `squash` o `rebase`                 |
-| `FACTORY_REWORK_ON_CHANGES_REQUESTED` | `true` | reabre el desarrollo con CHANGES_REQUESTED |
-| `FACTORY_TRIAGE_PR_COMMENTS` | `true`         | evalúa comentarios de la PR antes de rework  |
-| `FACTORY_FEEDBACK_USERS` | vacío              | allowlist de logins que pueden dar feedback  |
-| `FACTORY_LABEL_IN_PROGRESS` | `factory:in-progress` | etiqueta de claim                       |
-| `FACTORY_LABEL_IN_REVIEW`| `factory:in-review`| etiqueta de entrega                          |
-| `FACTORY_LABEL_BLOCKED`  | `factory:blocked`  | etiqueta de bloqueo                          |
-| `FACTORY_LABEL_READY`    | vacío              | opt-in: solo issues con esta etiqueta        |
-| `FACTORY_SKIP_LABELS`    | `factory:skip`     | etiquetas que se ignoran                     |
-| `FACTORY_MODEL`          | modelo por defecto | `provider/model[#variant]` para todos los agentes |
-| `OLLAMA_API_KEY`         | vacío              | API key de Ollama Cloud (provider `ollama-cloud`) |
-| `FACTORY_OPENCODE_URL`   | — (obligatoria)    | URL del runtime aislado; Compose usa `http://opencode:4096` |
-| `FACTORY_HOST_PORT`      | `3000`             | puerto del host para la API                  |
-| `WEB_HOST_PORT`          | `8080`             | puerto del host para la webapp               |
-| `POSTGRES_USER`          | `factory`          | usuario de PostgreSQL                        |
-| `POSTGRES_PASSWORD`      | — (obligatoria)    | password de PostgreSQL, leído del `.env`     |
-| `POSTGRES_DB`            | `factory`          | base de datos                                |
-| `DATABASE_URL`           | — (obligatoria)    | URL completa; debe usar el mismo password    |
-| `FACTORY_AUTO_APPROVE_PERMISSIONS` | `true`    | responde permisos "ask" de OpenCode          |
-
-## Mapa del proyecto
-
-| Ruta | Contenido |
+| Agent | Permissions |
 | --- | --- |
-| `src/index.ts` | arranque, validación y shutdown |
-| `src/orchestrator.ts` | polling opcional, claim, worker y sync de cerrados |
-| `src/workflow.ts` | pipeline y transiciones de estado |
-| `src/api.ts` | API HTTP, incluido `POST /api/runs` |
-| `web/` | webapp para iniciar runs con repo + issue URL |
-| `src/domain/` | tipos, máquina de estados y parser de issues |
-| `src/backlog/github.ts` | conector de GitHub Issues |
-| `src/runtime/opencode.ts` | cliente HTTP de OpenCode (sesiones, permisos, espera) |
-| `src/scm/git.ts` | clone, worktrees, commits, tests y push |
-| `src/scm/github.ts` | creación idempotente de Pull Requests |
-| `src/store/` | PostgreSQL y store en memoria para tests |
-| `src/squad/prompts.ts` | prompts de cada rol y cuerpo del PR |
-| `squads/software-development/agents/` | perfiles y permisos de los agentes |
-| `tests/` | tests unitarios y de workflow |
-| `docs/` | arquitectura y fases |
-| `compose.yaml` | stack aislado |
-| `compose.dev.yaml` | puertos altos para desarrollo en el host |
+| `factory-planner` | read-only (`read`, `glob`, `grep`); no shell or editing |
+| `factory-builder` | read, edit, and shell; no subagents |
+| `factory-qa` | shell + editing limited to test files |
+| `factory-reviewer` | read-only + read-only `git`; no general editing |
+| `factory-feedback-triage` | read-only + `git`; decides `NO_ACTION` or `REWORK` |
 
-## Desarrollo
+The orchestrator creates one OpenCode session per step. Agents are persistent
+profiles; sessions and worktrees are ephemeral.
 
-La aplicación corre con Bun y no tiene dependencias de runtime. El flujo
-recomendado para iterar está en [Probar en local](#probar-en-local):
+## Configuration
+
+All variables are documented in [`.env.example`](.env.example). The most
+important ones:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `GITHUB_TOKEN` | — (required) | PAT with Issues, Contents, and Pull requests |
+| `GITHUB_REPOSITORY` | empty | repo for automatic polling (optional) |
+| `FACTORY_REPO_URL` | empty | polling repo URL (optional) |
+| `FACTORY_ALLOWED_REPOS` | empty | comma-separated `owner/repo` allowlist |
+| `FACTORY_BASE_BRANCH` | `main` | default base branch |
+| `FACTORY_TEST_CMD` | empty | fallback when the repo has no `.factory.yml` |
+| `FACTORY_SETUP_CMD` | empty | setup fallback |
+| `FACTORY_MAX_REWORK` | `3` | maximum correction cycles |
+| `FACTORY_DELIVERY_MODE` | `github` | `github` or `local` |
+| `FACTORY_AUTO_MERGE` | `false` | merge PRs with an APPROVED review |
+| `FACTORY_MERGE_METHOD` | `squash` | `merge`, `squash`, or `rebase` |
+| `FACTORY_REWORK_ON_CHANGES_REQUESTED` | `true` | reopen on CHANGES_REQUESTED |
+| `FACTORY_TRIAGE_PR_COMMENTS` | `true` | triage PR comments before rework |
+| `FACTORY_FEEDBACK_USERS` | empty | allowlist of logins allowed to give feedback |
+| `FACTORY_LABEL_IN_PROGRESS` | `factory:in-progress` | claim label |
+| `FACTORY_LABEL_IN_REVIEW` | `factory:in-review` | delivery label |
+| `FACTORY_LABEL_BLOCKED` | `factory:blocked` | blocked label |
+| `FACTORY_LABEL_READY` | empty | opt-in: only issues with this label |
+| `FACTORY_SKIP_LABELS` | `factory:skip` | labels to ignore |
+| `FACTORY_MODEL` | default model | `provider/model[#variant]` for all agents |
+| `OLLAMA_API_KEY` | empty | Ollama Cloud API key (`ollama-cloud` provider) |
+| `FACTORY_OPENCODE_URL` | — (required) | isolated runtime URL; Compose uses `http://opencode:4096` |
+| `FACTORY_HOST_PORT` | `3000` | host port for the API |
+| `WEB_HOST_PORT` | `8080` | host port for the webapp |
+| `POSTGRES_USER` | `factory` | PostgreSQL user |
+| `POSTGRES_PASSWORD` | — (required) | PostgreSQL password, read from `.env` |
+| `POSTGRES_DB` | `factory` | database |
+| `DATABASE_URL` | — (required) | full URL; must use the same password |
+| `FACTORY_AUTO_APPROVE_PERMISSIONS` | `true` | answer OpenCode "ask" permissions |
+
+## Project map
+
+| Path | Content |
+| --- | --- |
+| `src/index.ts` | startup, validation, shutdown |
+| `src/orchestrator.ts` | optional polling, claim, worker, closed-issue sync |
+| `src/workflow.ts` | pipeline and state transitions |
+| `src/api.ts` | HTTP API, including `POST /api/runs` |
+| `web/` | webapp to start runs with repo + issue URL |
+| `src/domain/` | types, state machine, issue parser |
+| `src/backlog/github.ts` | GitHub Issues connector |
+| `src/runtime/opencode.ts` | OpenCode HTTP client (sessions, permissions, wait) |
+| `src/scm/git.ts` | clone, worktrees, commits, tests, push |
+| `src/scm/github.ts` | idempotent Pull Request creation |
+| `src/store/` | PostgreSQL and in-memory test store |
+| `src/squad/prompts.ts` | role prompts and PR body |
+| `squads/software-development/agents/` | agent profiles and permissions |
+| `tests/` | unit and workflow tests |
+| `docs/` | architecture and phases |
+| `compose.yaml` | isolated stack |
+| `compose.dev.yaml` | high ports for host development |
+
+## Development
+
+The application runs on Bun and has no runtime dependencies. The recommended
+iteration flow is in [Testing locally](#testing-locally):
 
 ```bash
 bun install
@@ -707,7 +720,7 @@ bun test
 bun run typecheck
 ```
 
-Para ejecutar el orquestador en el host contra el runtime aislado:
+To run the orchestrator on the host against the isolated runtime:
 
 ```bash
 mkdir -p .factory-dev
@@ -715,68 +728,69 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d postgres opencode
 
 FACTORY_DATA_DIR="$PWD/.factory-dev" \
 FACTORY_OPENCODE_URL=http://127.0.0.1:14096 \
-DATABASE_URL=postgres://factory:factory@127.0.0.1:15432/factory \
+DATABASE_URL=postgres://factory:TU_PASSWORD@127.0.0.1:15432/factory \
 bun run src/index.ts
 ```
 
-`FACTORY_OPENCODE_URL` es obligatoria a propósito: el código nunca asume
-`127.0.0.1:4096`, para que un despiste no acabe usando tu OpenCode local.
+`FACTORY_OPENCODE_URL` is required on purpose: the code never assumes
+`127.0.0.1:4096`, so a mistake cannot end up using your local OpenCode.
 
-### Añadir un agente
+### Adding an agent
 
-1. Crea `squads/software-development/agents/factory-<rol>.md`.
-2. Declara `description`, `mode`, `steps` y `permissions` en el frontmatter.
-3. Añade el ID a la lista de verificación de `src/index.ts`.
-4. Añade su prompt y su paso en `src/workflow.ts`, con transiciones válidas en
+1. Create `squads/software-development/agents/factory-<role>.md`.
+2. Declare `description`, `mode`, `steps`, and `permissions` in the frontmatter.
+3. Add the ID to the verification list in `src/index.ts`.
+4. Add its prompt and step in `src/workflow.ts`, with valid transitions in
    `src/domain/state.ts`.
-5. Añade tests del nuevo paso en `tests/workflow.test.ts`.
+5. Add tests for the new step in `tests/workflow.test.ts`.
 
-### Añadir un conector de backlog
+### Adding a backlog connector
 
-Implementa `BacklogPort` en `src/ports.ts` y construye el adaptador en
-`src/index.ts`. El workflow no conoce GitHub: solo usa el puerto. Para Jira,
-Linear o Vikunja, replica el patrón de `src/backlog/github.ts`.
+Implement `BacklogPort` in `src/ports.ts` and wire the adapter in `src/index.ts`.
+The workflow does not know about GitHub: it only uses the port. For Jira, Linear,
+or Vikunja, follow the pattern in `src/backlog/github.ts`.
 
-## Skill del proyecto
+## Project skill (local only)
 
-El conocimiento operativo del proyecto está en
-[`.opencode/skills/software-factory/SKILL.md`](.opencode/skills/software-factory/SKILL.md).
-Se carga automáticamente en futuras sesiones de OpenCode abiertas en este
-repositorio y contiene:
+The project's operational knowledge lives in
+`.opencode/skills/software-factory/SKILL.md`. It is loaded automatically in
+future OpenCode sessions opened in this repository and contains:
 
-- arquitectura e invariantes que no se deben romper;
-- comandos de test y de arranque;
-- reglas de aislamiento del runtime;
-- errores conocidos de la API de OpenCode;
-- estado de las fases y siguientes pasos.
+- architecture and invariants that must not be broken;
+- test and startup commands;
+- runtime isolation rules;
+- known OpenCode API pitfalls;
+- phase status and next steps.
 
-Es una skill **project-local**: no modifica la configuración global de tu
-OpenCode ni la del runtime del factory. Si cambias la arquitectura, actualiza la
-skill en el mismo cambio que el código.
+The `.opencode/` directory is intentionally **gitignored and not published** in
+the public repository. It is a project-local skill: it does not modify your
+global OpenCode configuration or the factory runtime configuration. If you change
+the architecture, update the local skill in the same change as the code.
 
-## Seguridad y límites
+## Security and limits
 
-- El contenedor de OpenCode tiene acceso al volumen compartido `/data`, no al
-  resto del host.
-- El Reviewer no puede editar; el Planner tampoco. La separación es deliberada.
-- El orquestador es quien decide transiciones, commits, push y PR. Un agente no
-  puede declarar un ticket terminado.
-- Los tokens no se registran en logs ni se guardan en la configuración de git.
-- `.env` está ignorado por git y debe quedarse en permisos `600`; no lo commitees.
-  Si un token se comparte por chat, logs o capturas, rótalo.
-- El contenedor `opencode` no recibe `GITHUB_TOKEN` ni `DATABASE_URL`; la webapp
-  solo recibe `FACTORY_API_TOKEN`. La factory sí necesita GitHub/DB.
-- `FACTORY_SETUP_CMD`, `FACTORY_TEST_CMD` y los comandos de `.factory.yml` se
-  ejecutan en el contenedor de la factory y heredan su entorno. Ejecuta solo
-  repositorios y configuraciones de confianza.
-- El PR queda para revisión humana por defecto. Con `FACTORY_AUTO_MERGE=true` solo
-  se mergea tras una review `APPROVED` y un estado `clean`.
-- El token de GitHub tiene acceso de escritura al repo: trátalo como un secreto.
-- La webapp/API acepta repos en runtime. Si la expones fuera de tu máquina,
-  define `FACTORY_ALLOWED_REPOS` y `FACTORY_API_TOKEN`.
-- `.factory.yml` se lee del repo objetivo; quien controla ese repo controla los
-  comandos que se ejecutan. No uses repos no confiables.
-- La contraseña `factory` de PostgreSQL en Compose es un valor local de
-  desarrollo; cámbiala si no es una instalación estrictamente local.
-- Esta fase está pensada para ejecución local. No expongas la API a Internet ni
-  ejecutes agentes sobre repositorios sin revisar sus permisos.
+- The OpenCode container has access to the shared `/data` volume, not the rest of
+  the host.
+- The Reviewer cannot edit; neither can the Planner. The separation is
+  intentional.
+- The orchestrator decides transitions, commits, pushes, and PRs. An agent cannot
+  declare a ticket finished.
+- Tokens are not written to logs or stored in git configuration.
+- `.env` is gitignored and should stay at `600` permissions; never commit it.
+  If a token is shared through chat, logs, or screenshots, rotate it.
+- The `opencode` container does not receive `GITHUB_TOKEN` or `DATABASE_URL`; the
+  webapp only receives `FACTORY_API_TOKEN`. The factory does need GitHub/DB.
+- `FACTORY_SETUP_CMD`, `FACTORY_TEST_CMD`, and `.factory.yml` commands run in the
+  factory container and inherit its environment. Only run trusted repositories
+  and configurations.
+- The PR stays for human review by default. With `FACTORY_AUTO_MERGE=true`, it is
+  only merged after an `APPROVED` review and a `clean` state.
+- The GitHub token has write access to the repo: treat it as a secret.
+- The webapp/API accepts repos at runtime. If you expose it outside your machine,
+  set `FACTORY_ALLOWED_REPOS` and `FACTORY_API_TOKEN`.
+- `.factory.yml` is read from the target repo; whoever controls that repo
+  controls the commands that run. Do not use untrusted repos.
+- The PostgreSQL password in `.env` is a local development value; change it if
+  this is not a strictly local installation.
+- This phase is intended for local execution. Do not expose the API to the
+  Internet or run agents on repositories whose permissions you have not reviewed.
