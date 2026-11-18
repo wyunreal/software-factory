@@ -1,10 +1,10 @@
-# Arquitectura
+# Architecture
 
-## Principio rector
+## Guiding principle
 
-OpenCode es el **runtime de los agentes**, no el orquestador global. El
-orquestador es un servicio propio que decide qué se hace, cuándo y por quién.
-Así se puede cambiar el runtime sin rehacer el workflow.
+OpenCode is the **agent runtime**, not the global orchestrator. The orchestrator
+is a dedicated service that decides what runs, when, and by whom. This makes it
+possible to replace the runtime without rewriting the workflow.
 
 ```
 ┌──────────────┐  repo + issue  ┌──────────────────────────────────────┐
@@ -27,43 +27,44 @@ Así se puede cambiar el runtime sin rehacer el workflow.
                                                             └────────────┘
 ```
 
-El repo y el issue llegan en runtime desde la webapp o `POST /api/runs`. El
-polling automático de un repo por defecto es opcional.
+The repo and issue arrive at runtime from the webapp or `POST /api/runs`.
+Automatic polling of a default repo is optional.
 
-## Componentes
+## Components
 
-| Componente        | Responsabilidad                                                |
-| ----------------- | -------------------------------------------------------------- |
-| `src/index.ts`    | bootstrap, validación de configuración, shutdown                |
-| `src/api.ts`      | API HTTP, incluido `POST /api/runs` (repo + issue URL)          |
-| `web/`            | webapp para iniciar runs y ver su estado                        |
-| `src/orchestrator.ts` | polling opcional, claim, worker único, sync de `Done`      |
-| `src/workflow.ts` | pipeline del ticket y transiciones de estado                     |
-| `src/backlog/github.ts` | conector de GitHub Issues (puerto `BacklogPort`)                 |
-| `src/runtime/opencode.ts` | cliente de OpenCode Server (puerto `AgentRuntimePort`) |
-| `src/scm/git.ts`  | clone por repo, `.factory.yml`, worktrees, commits, tests, push  |
-| `src/scm/github.ts` | creación idempotente de Pull Requests en el repo del run      |
-| `src/store/postgres.ts` | persistencia (puerto `RunStore`)                          |
-| `src/domain/state.ts` | máquina de estados y validación de transiciones              |
-| `src/domain/ticket.ts` | normalización de tickets y criterios de aceptación          |
-| `src/squad/prompts.ts` | prompts por rol y cuerpo del PR                             |
+| Component | Responsibility |
+| --- | --- |
+| `src/index.ts` | bootstrap, configuration validation, shutdown |
+| `src/api.ts` | HTTP API, including `POST /api/runs` (repo + issue URL) |
+| `web/` | webapp to start runs and inspect their state |
+| `src/orchestrator.ts` | optional polling, claim, single worker, `Done` sync |
+| `src/workflow.ts` | ticket pipeline and state transitions |
+| `src/backlog/github.ts` | GitHub Issues connector (`BacklogPort`) |
+| `src/runtime/opencode.ts` | OpenCode Server client (`AgentRuntimePort`) |
+| `src/scm/git.ts` | per-repo clone, `.factory.yml`, worktrees, commits, tests, push |
+| `src/scm/github.ts` | idempotent Pull Request creation in the run's repo |
+| `src/store/postgres.ts` | persistence (`RunStore`) |
+| `src/domain/state.ts` | state machine and transition validation |
+| `src/domain/ticket.ts` | ticket normalization and acceptance criteria |
+| `src/squad/prompts.ts` | role prompts and PR body |
 
-Los puertos (`src/ports.ts`) permiten testear el workflow con dobles en memoria y
-sustituir GitHub Issues, OpenCode o PostgreSQL sin tocar la lógica.
+The ports (`src/ports.ts`) make it possible to test the workflow with in-memory
+doubles and replace GitHub Issues, OpenCode, or PostgreSQL without touching the
+logic.
 
-## Propiedad del workflow
+## Workflow ownership
 
-Los agentes **no** cambian el estado. El orquestador:
+Agents **do not** change state. The orchestrator:
 
-1. valida que la transición es legal (`assertTransition`);
-2. persiste el nuevo estado y un evento;
-3. ejecuta la puerta correspondiente.
+1. validates that the transition is legal (`assertTransition`);
+2. persists the new state and an event;
+3. runs the corresponding gate.
 
-Un agente puede recomendar que una tarea está terminada, pero no puede declararla
-terminada. El Reviewer solo aporta un veredicto; el orquestador decide si eso
-implica `DELIVERY`, `REWORK` o `BLOCKED`.
+An agent may recommend that a task is finished, but it cannot declare it
+finished. The Reviewer only provides a verdict; the orchestrator decides whether
+that means `DELIVERY`, `REWORK`, or `BLOCKED`.
 
-## Máquina de estados
+## State machine
 
 ```
 CLAIMED ──► PLANNING ──► PLANNED ──► BUILDING ──► QA ──► TESTING
@@ -77,102 +78,107 @@ REVIEWING ── PASS ──► DELIVERY ──► HUMAN_REVIEW ──► DONE
     └── FAIL ──► REWORK                └──► TRIAGING ──► HUMAN_REVIEW
                                               └───────► REWORK
 
-estado activo ──► BLOCKED
+active state ──► BLOCKED
 ```
 
-Invariantes:
+Invariants:
 
-- No se puede saltar de `PLANNING` a `BUILDING` ni de `CLAIMED` a `DELIVERY`.
-- `REWORK` solo puede volver a `BUILDING`.
-- `HUMAN_REVIEW`, `DONE` y `BLOCKED` son terminales para la automatización;
-  `HUMAN_REVIEW` puede reactivarse con una review `CHANGES_REQUESTED` (directo a
-  `REWORK`) o con comentarios que pasan por `TRIAGING`.
-- `BLOCKED` exige intervención humana; mover la tarjeta a `Ready` crea una nueva
-  ejecución (el índice único solo cubre ejecuciones con `finished_at IS NULL`).
+- You cannot skip from `PLANNING` to `BUILDING` or from `CLAIMED` to `DELIVERY`.
+- `REWORK` can only return to `BUILDING`.
+- `HUMAN_REVIEW`, `DONE`, and `BLOCKED` are terminal for automation;
+  `HUMAN_REVIEW` can be reactivated by a `CHANGES_REQUESTED` review (straight to
+  `REWORK`) or by comments that go through `TRIAGING`.
+- `BLOCKED` requires human intervention; moving the issue back to Ready or
+  reopening it creates a new run (the unique index only covers runs with
+  `finished_at IS NULL`).
 
-## Aislamiento con git worktrees
+## Isolation with git worktrees
 
-Cada ejecución tiene:
+Each run has:
 
 - worktree: `/data/worktrees/<ticket>-<run-id>/`
-- rama: `factory/<ticket>-<run-id>`
+- branch: `factory/<ticket>-<run-id>`
 
-El repositorio base se clona una vez en `/data/repos/<repo>/`. El worktree se crea
-desde `origin/<base>` y se reutiliza si el proceso se reinicia. Los agentes nunca
-comparten directorio.
+The base repository is cloned once into `/data/repos/<repo>/`. The worktree is
+created from `origin/<base>` and reused if the process restarts. Agents never
+share a directory.
 
-El orquestador es el único que hace `git add`, `commit`, `push` y crea el PR. Los
-prompts de los agentes prohíben explícitamente reescribir historia. El Builder
-trabaja sobre el árbol de trabajo y el orquestador commitea al terminar.
+The orchestrator is the only actor that runs `git add`, `commit`, `push`, and
+creates the PR. Agent prompts explicitly forbid rewriting history. The Builder
+works on the working tree and the orchestrator commits when it finishes.
 
-## Artefactos
+## Artifacts
 
-`artifacts` guarda texto y metadatos por paso. Son el contrato entre agentes:
+`artifacts` stores text and metadata per step. They are the contract between
+agents:
 
-- el plan alimenta al Builder, QA y Reviewer;
-- el informe de build alimenta a QA;
-- la salida de tests y el informe de QA alimentan al Reviewer;
-- el veredicto del Reviewer decide la transición;
-- el PR se construye a partir de todos ellos.
+- the plan feeds the Builder, QA, and Reviewer;
+- the build report feeds QA;
+- the test output and QA report feed the Reviewer;
+- the Reviewer verdict decides the transition;
+- the PR is built from all of them.
 
-Los metadatos permiten decisiones deterministas: `tests.passed` y
-`review.verdict` se guardan como JSONB, no se re-parsean del texto libre.
+Metadata enables deterministic decisions: `tests.passed` and `review.verdict`
+are stored as JSONB, not re-parsed from free text.
 
-## Manejo de fallos
+## Failure handling
 
-- **Error de agente o timeout**: se interrumpe la sesión y la ejecución pasa a
-  `BLOCKED` con el motivo en PostgreSQL y en el issue.
-- **Tests rojos**: feedback al Builder y nuevo ciclo, hasta `FACTORY_MAX_REWORK`.
-- **Review FAIL**: mismo mecanismo, con los hallazgos como feedback.
-- **Builder sin cambios**: se bloquea; evita PRs vacíos y bucles silenciosos.
-- **Fallo de entrega**: push/PR falla → `BLOCKED`, nunca `HUMAN_REVIEW` falso.
-- **Fallo de GitHub al actualizar el issue tras crear el PR**: se registra el warning y la ejecución se
-  marca `HUMAN_REVIEW`; el trabajo ya está entregado.
+- **Agent error or timeout**: the session is interrupted and the run moves to
+  `BLOCKED` with the reason in PostgreSQL and on the issue.
+- **Red tests**: feedback to the Builder and another cycle, up to
+  `FACTORY_MAX_REWORK`.
+- **Review FAIL**: same mechanism, with the findings as feedback.
+- **Builder with no changes**: blocked; avoids empty PRs and silent loops.
+- **Delivery failure**: push/PR fails → `BLOCKED`, never a fake `HUMAN_REVIEW`.
+- **GitHub failure while updating the issue after creating the PR**: the warning
+  is recorded and the run is marked `HUMAN_REVIEW`; the work has already been
+  delivered.
 
-`claimNext` selecciona la ejecución activa más antigua. En Fase 1 hay un solo
-worker (una réplica). El flag `working` evita solapamientos dentro del proceso y
-el índice único de PostgreSQL evita dos ejecuciones activas del mismo ticket. El
-procesamiento concurrente del mismo run (leases) queda para la Fase 2.
+`claimNext` selects the oldest active run. In Phase 1 there is one worker (one
+replica). The `working` flag prevents overlap inside the process, and the
+PostgreSQL unique index prevents two active runs for the same ticket. Concurrent
+processing of the same run (leases) is left for Phase 2.
 
-## Seguridad
+## Security
 
-- El servidor OpenCode usa autenticación básica (`OPENCODE_SERVER_PASSWORD`) y no
-  se publica fuera de la red de Compose.
-- Los agentes tienen permisos por rol en su definición Markdown. La separación
-  Planner/Reviewer (solo lectura) y Builder (escritura) es intencional.
-- Las peticiones de permiso de OpenCode se responden automáticamente solo para
-  sesiones creadas por la factoría; se registran en logs. Se puede desactivar con
+- The OpenCode server uses basic authentication (`OPENCODE_SERVER_PASSWORD`) and
+  is not published outside the Compose network.
+- Agents have role-based permissions in their Markdown definition. The
+  Planner/Reviewer (read-only) and Builder (write) separation is intentional.
+- OpenCode permission requests are answered automatically only for sessions
+  created by the factory; they are written to logs. This can be disabled with
   `FACTORY_AUTO_APPROVE_PERMISSIONS=false`.
-- El token de GitHub se usa en memoria para git y la API; no se escribe en
+- The GitHub token is used in memory for git and the API; it is not written to
   `.git/config`.
-- El contenedor solo monta el volumen de datos y los agentes; no el home del host.
-- El repo objetivo se resuelve por run desde la webapp/API. Usa
-  `FACTORY_ALLOWED_REPOS` para limitarlo; sin allowlist, cualquier repo al que
-  llegue el token puede ser clonado.
-- `.factory.yml` se ejecuta desde el repo objetivo: trátalo como código de
-  confianza y no apuntes la factoría a repos no confiables.
+- The container only mounts the data volume and the agents; not the host home.
+- The target repo is resolved per run from the webapp/API. Use
+  `FACTORY_ALLOWED_REPOS` to restrict it; without an allowlist, any repo the token
+  can reach may be cloned.
+- `.factory.yml` is executed from the target repo: treat it as trusted code and
+  do not point the factory at untrusted repos.
 
-### Aislamiento del runtime OpenCode
+### OpenCode runtime isolation
 
-El runtime del factory es deliberadamente distinto del OpenCode del desarrollador:
+The factory runtime is deliberately separate from the developer's OpenCode:
 
 - `XDG_CONFIG_HOME=/config`, `XDG_DATA_HOME=/data/opencode/data`,
-  `XDG_CACHE_HOME=/data/opencode/cache`, `XDG_STATE_HOME=/data/opencode/state`
-  y `HOME=/data/opencode/home`, todos dentro del contenedor/volumen.
-- `/config/opencode` solo contiene el `opencode.json` del factory y los agentes
-  montados en modo lectura.
-- No se monta `~/.config/opencode`, `~/.local/share/opencode` ni `~/.opencode`.
-- El puerto 4096 no se publica; para desarrollo en el host, `compose.dev.yaml`
-  publica `14096` (OpenCode) y `15432` (PostgreSQL) en `127.0.0.1`.
-- `FACTORY_OPENCODE_URL` es obligatoria: no hay fallback silencioso a
-  `127.0.0.1:4096`, que podría ser el runtime local del desarrollador.
+  `XDG_CACHE_HOME=/data/opencode/cache`, `XDG_STATE_HOME=/data/opencode/state`,
+  and `HOME=/data/opencode/home`, all inside the container/volume.
+- `/config/opencode` only contains the factory's `opencode.json` and the agents
+  mounted read-only.
+- `~/.config/opencode`, `~/.local/share/opencode`, and `~/.opencode` are not
+  mounted.
+- Port 4096 is not published; for host development, `compose.dev.yaml` publishes
+  `14096` (OpenCode) and `15432` (PostgreSQL) on `127.0.0.1`.
+- `FACTORY_OPENCODE_URL` is required: there is no silent fallback to
+  `127.0.0.1:4096`, which could be the developer's local runtime.
 
-Verificación: `docker compose exec opencode opencode debug paths` debe mostrar
-todas las rutas bajo `/config` o `/data`.
+Verification: `docker compose exec opencode opencode debug paths` must show every
+path under `/config` or `/data`.
 
-## Evolución
+## Evolution
 
-La Fase 2 sustituye el worker único por una cola y añade builders paralelos. Los
-puertos ya separan backlog, runtime, workspace y entrega, así que el cambio se
-concentra en el orquestador y en el modelo de datos (tareas hijas, dependencias,
-leases). Ver [`phases.md`](phases.md).
+Phase 2 replaces the single worker with a queue and adds parallel builders. The
+ports already separate backlog, runtime, workspace, and delivery, so the change
+is concentrated in the orchestrator and the data model (child tasks,
+dependencies, leases). See [`phases.md`](phases.md).

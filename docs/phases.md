@@ -1,113 +1,112 @@
-# Fases de la factoría
+# Factory phases
 
-La arquitectura objetivo es el **modelo C**: una factoría dinámica que crea
-squads especializados según el tipo y complejidad del ticket. Para llegar ahí sin
-construir de golpe un sistema distribuido, se implementa primero el **modelo A**
-(un squad, un ticket a la vez) y se valida el circuito completo.
+The target architecture is **model C**: a dynamic factory that creates
+specialized squads based on ticket type and complexity. To get there without
+building a distributed system all at once, the first implementation is **model
+A** (one squad, one ticket at a time), validating the complete loop.
 
-## Fase 1 — MVP: ticket → PR (implementada)
+## Phase 1 — MVP: ticket → PR (implemented)
 
-**Objetivo:** demostrar que un issue real de GitHub se convierte en un Pull
-Request revisable, con estado, artefactos y puertas de calidad, ejecutándose en
-local con Docker Compose.
+**Goal:** prove that a real GitHub issue can become a reviewable Pull Request,
+with state, artifacts, and quality gates, running locally with Docker Compose.
 
-Incluido:
+Included:
 
-- Orquestador propio (Bun + TypeScript) separado del runtime de agentes.
-- PostgreSQL para ejecuciones, artefactos y eventos.
-- Conector de GitHub Issues: webapp/API con repo + issue URL, polling opcional,
-  claim, etiquetas, comentarios y cierre.
-- OpenCode Server como runtime; un perfil de agente por rol.
-- Planner, Builder, QA y Reviewer con permisos distintos.
-- Worktree aislado por ejecución y rama `factory/<ticket>-<run>`.
-- Repo objetivo resuelto en runtime, con `.factory.yml` para setup/test.
-- Puerta de tests determinista y veredicto de review.
-- Reintentos de corrección acotados (`FACTORY_MAX_REWORK`).
-- Push y Pull Request en el repo del issue; modo `local` sin push/PR.
-- API de inspección, webapp y `/health`.
+- A dedicated orchestrator (Bun + TypeScript), separate from the agent runtime.
+- PostgreSQL for runs, artifacts, and events.
+- GitHub Issues connector: webapp/API with repo + issue URL, optional polling,
+  claim, labels, comments, and closure.
+- OpenCode Server as the runtime; one agent profile per role.
+- Planner, Builder, QA, and Reviewer with distinct permissions.
+- An isolated worktree per run and a `factory/<ticket>-<run>` branch.
+- Target repo resolved at runtime, with `.factory.yml` for setup/test.
+- Deterministic test gate and review verdict.
+- Review feedback: `CHANGES_REQUESTED` rework on the same PR, comment triage
+  (`NO_ACTION`/`REWORK`), and opt-in auto-merge after a human `APPROVED` review.
+- Bounded correction cycles (`FACTORY_MAX_REWORK`).
+- Push and Pull Request in the issue's repo; `local` mode without push/PR.
+- Inspection API, webapp, and `/health`.
 
-Criterio de salida:
+Exit criteria:
 
-- Un run iniciado desde la webapp termina en `In Review` con un PR abierto.
-- Si los tests fallan, el Builder recibe el fallo y corrige.
-- Si el Reviewer falla, hay rework o bloqueo, nunca un falso PASS.
-- El estado y los artefactos sobreviven a reinicios del proceso.
+- A run started from the webapp ends in `In Review` with an open PR.
+- If tests fail, the Builder receives the failure and corrects it.
+- If the Reviewer fails, there is rework or a block, never a false PASS.
+- State and artifacts survive process restarts.
 
-No incluido: paralelismo, varios runs concurrentes, dashboard,
-presupuestos, métricas históricas, leases/reintentos automáticos y recuperación
-avanzada de ejecuciones a medio paso.
+Not included: parallelism, multiple concurrent runs, dashboard, budgets,
+historical metrics, leases/automatic retries, and advanced recovery of runs that
+were interrupted mid-step.
 
-## Fase 2 — Paralelismo y descomposición
+## Phase 2 — Parallelism and decomposition
 
-**Objetivo:** que un ticket grande se divida en tareas ejecutables en paralelo
-sin que los agentes se pisen.
+**Goal:** split a large ticket into tasks that can run in parallel without agents
+stepping on each other.
 
-Trabajo previsto:
+Planned work:
 
-- Parseo estructurado del plan (JSON schema) y grafo de dependencias.
-- Varios builders por ticket, cada uno con su worktree y su rama.
-- Cola de trabajo (Redis/BullMQ o `SKIP LOCKED` sobre PostgreSQL).
-- Límites de concurrencia por ticket, por repo y globales.
-- Estrategia de integración: rama de integración, merges ordenados y resolución
-  de conflictos por un agente integrador o por el orquestador.
-- Contexto por tarea: solo ticket, plan relevante, documentación y resultados de
-  dependencias.
-- QA Planner en paralelo con los builders.
-- Workers horizontales: varios contenedores consumiendo la misma cola.
+- Structured plan parsing (JSON schema) and a dependency graph.
+- Multiple builders per ticket, each with its own worktree and branch.
+- Work queue (Redis/BullMQ or `SKIP LOCKED` on PostgreSQL).
+- Concurrency limits per ticket, per repo, and globally.
+- Integration strategy: integration branch, ordered merges, and conflict
+  resolution by an integrator agent or by the orchestrator.
+- Per-task context: only the ticket, relevant plan, documentation, and
+  dependency results.
+- QA Planner running in parallel with the builders.
+- Horizontal workers: multiple containers consuming the same queue.
 
-Criterio de salida: dos tickets independientes avanzan a la vez sin compartir
-directorio ni rama; un ticket con dos tareas dependientes se integra y entrega un
-único PR.
+Exit criteria: two independent tickets advance at the same time without sharing
+a directory or branch; a ticket with two dependent tasks is integrated and
+delivered as a single PR.
 
-## Fase 3 — Factoría autónoma
+## Phase 3 — Autonomous factory
 
-**Objetivo:** operar de forma continua con supervisión humana solo en los puntos
-críticos.
+**Goal:** operate continuously with human supervision only at critical points.
 
-Trabajo previsto:
+Planned work:
 
-- Webhooks de GitHub además del polling.
-- Recuperación de ejecuciones interrumpidas desde el último paso completado.
-- Reintentos con backoff y bloqueo automático ante fallos repetidos.
-- Presupuesto por ticket (tokens/coste) y corte automático.
-- Métricas: lead time `Ready → PR`, tasa de PR aceptados, ciclos de rework,
-  coste por ticket, incidencias introducidas.
-- Dashboard (Next.js) y trazas OpenTelemetry.
-- Escalado dinámico de workers.
-- Bucle de feedback del PR: comentarios de revisión humana convertidos en nuevas
-  tareas para el squad.
-- Políticas de aprobación humana obligatoria para migraciones destructivas,
-  cambios de seguridad y merge a ramas protegidas.
+- GitHub webhooks in addition to polling.
+- Recovery of interrupted runs from the last completed step.
+- Retries with backoff and automatic blocking after repeated failures.
+- Per-ticket budget (tokens/cost) and automatic cutoff.
+- Metrics: `Ready → PR` lead time, PR acceptance rate, rework cycles, cost per
+  ticket, incidents introduced.
+- Dashboard (Next.js) and OpenTelemetry traces.
+- Dynamic worker scaling.
+- Advanced human-feedback routing across tickets and squads.
+- Mandatory human approval policies for destructive migrations, security
+  changes, and merges to protected branches.
 
-Criterio de salida: la factoría procesa tickets durante días sin intervención,
-con métricas y presupuestos visibles, y se detiene sola cuando debe.
+Exit criteria: the factory processes tickets for days without intervention, with
+visible metrics and budgets, and stops itself when it should.
 
-## Fase 4 — Más allá del software
+## Phase 4 — Beyond software
 
-**Objetivo:** convertir el sistema en una plataforma de producción de cualquier
-activo, no solo código.
+**Goal:** turn the system into a production platform for any kind of asset, not
+just code.
 
-Trabajo previsto:
+Planned work:
 
-- Squads y workflows por tipo de trabajo: features, bugs, documentación, diseño,
-  datos, investigación, infraestructura.
-- Registro de agentes y workflows como configuración versionada.
-- Backlog agnóstico al tipo de activo: un ticket representa una unidad de trabajo.
-- Artefactos heterogéneos: documentos, imágenes, análisis, cambios de infra.
-- Políticas de entrega por tipo (PR, documento, informe, despliegue).
+- Squads and workflows per work type: features, bugs, documentation, design,
+  data, research, infrastructure.
+- Agents and workflows registered as versioned configuration.
+- A backlog agnostic to asset type: a ticket represents a unit of work.
+- Heterogeneous artifacts: documents, images, analyses, infrastructure changes.
+- Delivery policies per type (PR, document, report, deployment).
 
-Criterio de salida: añadir un squad nuevo no requiere tocar el orquestador; solo
-se registran perfiles, permisos y workflow.
+Exit criteria: adding a new squad does not require touching the orchestrator;
+only profiles, permissions, and workflow are registered.
 
-## Decisiones transversales
+## Cross-cutting decisions
 
-- **Squads efímeros, perfiles persistentes.** Se instancian sesiones por ticket y
-  se destruyen al terminar; los perfiles viven en el repositorio.
-- **El workflow no lo controla el LLM.** El orquestador valida transiciones; los
-  agentes solo producen artefactos y recomendaciones.
-- **Artefactos como contrato.** Cada paso deja un documento persistido que el
-  siguiente agente consume.
-- **Aislamiento por worktree.** Nunca dos agentes en el mismo directorio.
-- **Puertas deterministas.** Tests y reglas de entrega no dependen del criterio
-  del modelo.
-- **Aprobación humana en el merge.** La autonomía crece en fases, no de golpe.
+- **Ephemeral squads, persistent profiles.** Sessions are created per ticket and
+  destroyed when they finish; profiles live in the repository.
+- **The LLM does not own the workflow.** The orchestrator validates transitions;
+  agents only produce artifacts and recommendations.
+- **Artifacts as contracts.** Each step leaves a persisted document that the next
+  agent consumes.
+- **Worktree isolation.** Never run two agents in the same directory.
+- **Deterministic gates.** Tests and delivery rules do not depend on the model's
+  judgment.
+- **Human approval at merge time.** Autonomy grows in phases, not all at once.
