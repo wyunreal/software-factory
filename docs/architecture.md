@@ -6,25 +6,14 @@ OpenCode is the **agent runtime**, not the global orchestrator. The orchestrator
 is a dedicated service that decides what runs, when, and by whom. This makes it
 possible to replace the runtime without rewriting the workflow.
 
-```
-┌──────────────┐  repo + issue  ┌──────────────────────────────────────┐
-│   webapp     │───────────────►│              Orchestrator            │
-│  (8080)      │                │  API · worker · state machine        │
-└──────────────┘                └──────────────┬───────────────────────┘
-                                               │
-                     ┌─────────────────────────┼─────────────────────┐
-                     ▼                         ▼                     ▼
-              ┌────────────┐            ┌────────────┐        ┌────────────┐
-              │ PostgreSQL │            │  OpenCode  │        │    Git     │
-              │ runs       │            │  sessions  │        │ worktrees  │
-              │ artifacts  │            │  agents    │        │ commits    │
-              │ events     │            └────────────┘        └──────┬─────┘
-              └────────────┘                                        │
-                                                                    ▼
-                                                            ┌────────────┐
-                                                            │ GitHub Issue│
-                                                            │ + PR        │
-                                                            └────────────┘
+```mermaid
+flowchart LR
+  W["webapp :8080"] -->|repo + issue| O["Orchestrator"]
+  O -->|runs · artifacts · events| DB[("PostgreSQL")]
+  O -->|sessions · prompts| OC["OpenCode"]
+  O -->|clone · commit · push| G["Git worktrees"]
+  G -->|branch + PR| GH["GitHub Issue + PR"]
+  GH -->|issue · comments · reviews| O
 ```
 
 The repo and issue arrive at runtime from the webapp or `POST /api/runs`.
@@ -66,19 +55,27 @@ that means `DELIVERY`, `REWORK`, or `BLOCKED`.
 
 ## State machine
 
-```
-CLAIMED ──► PLANNING ──► PLANNED ──► BUILDING ──► QA ──► TESTING
-                                                 ▲          │
-                                                 │          ├── PASS ──► REVIEWING
-                                                 │          └── FAIL ──► REWORK
-                                                 │                        │
-                                                 └────────────────────────┘
-REVIEWING ── PASS ──► DELIVERY ──► HUMAN_REVIEW ──► DONE
-    │                                  │
-    └── FAIL ──► REWORK                └──► TRIAGING ──► HUMAN_REVIEW
-                                              └───────► REWORK
-
-active state ──► BLOCKED
+```mermaid
+flowchart TD
+  C[CLAIMED] --> P[PLANNING] --> PL[PLANNED] --> B[BUILDING] --> Q[QA] --> T[TESTING] --> R[REVIEWING] --> D[DELIVERY] --> H[HUMAN_REVIEW] --> DONE[DONE]
+  T -->|FAIL| RW[REWORK]
+  R -->|FAIL| RW
+  H -->|CHANGES_REQUESTED| RW
+  H -->|comments| TRI[TRIAGING]
+  TRI -->|NO_ACTION| H
+  TRI -->|REWORK| RW
+  RW --> B
+  C -.-> BL[BLOCKED]
+  P -.-> BL
+  PL -.-> BL
+  B -.-> BL
+  Q -.-> BL
+  T -.-> BL
+  R -.-> BL
+  D -.-> BL
+  H -.-> BL
+  TRI -.-> BL
+  RW -.-> BL
 ```
 
 Invariants:
