@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Software Factory</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <p class="eyebrow">AI Software Factory</p>
+        <h1>Iniciar desarrollo de un issue</h1>
+        <p class="muted">
+          El repo y el issue deben pertenecer al mismo repositorio. La factoría
+          crea un worktree aislado, ejecuta el squad y deja el resultado listo
+          para revisión.
+        </p>
+      </div>
+      <a class="pill" href="/api/runs" target="_blank" rel="noreferrer">API runs</a>
+    </header>
+
+    <main>
+      <section class="card">
+        <form id="run-form">
+          <label>
+            Repositorio
+            <input
+              id="repoUrl"
+              name="repoUrl"
+              type="text"
+              placeholder="https://github.com/owner/repo"
+              autocomplete="off"
+              required
+            />
+          </label>
+
+          <label>
+            URL del issue
+            <input
+              id="issueUrl"
+              name="issueUrl"
+              type="url"
+              placeholder="https://github.com/owner/repo/issues/123"
+              autocomplete="off"
+              required
+            />
+          </label>
+
+          <label>
+            Rama base
+            <input id="baseBranch" name="baseBranch" type="text" value="main" />
+          </label>
+
+          <details>
+            <summary>Opciones avanzadas</summary>
+            <p class="muted">
+              Normalmente se leen de <code>.factory.yml</code> en el repo. Si
+              los rellenas aquí, tienen prioridad solo para esta ejecución.
+            </p>
+            <label>
+              Comando de instalación
+              <input
+                id="setupCommand"
+                name="setupCommand"
+                type="text"
+                placeholder="bun install"
+              />
+            </label>
+            <label>
+              Comando de tests
+              <input
+                id="testCommand"
+                name="testCommand"
+                type="text"
+                placeholder="bun test"
+              />
+            </label>
+          </details>
+
+          <button type="submit" id="submit">Iniciar desarrollo</button>
+        </form>
+
+        <div id="message" class="message hidden"></div>
+      </section>
+
+      <section class="card" id="run-panel" hidden>
+        <div class="run-header">
+          <div>
+            <p class="eyebrow">Ejecución</p>
+            <h2 id="run-title">—</h2>
+          </div>
+          <span id="run-state" class="badge">—</span>
+        </div>
+
+        <dl class="meta">
+          <div><dt>Run</dt><dd id="run-id">—</dd></div>
+          <div><dt>Repo</dt><dd id="run-repo">—</dd></div>
+          <div><dt>Rama</dt><dd id="run-branch">—</dd></div>
+          <div><dt>PR</dt><dd id="run-pr">—</dd></div>
+        </dl>
+
+        <p id="run-block" class="block hidden"></p>
+        <div id="artifacts" class="chips"></div>
+      </section>
+
+      <section class="card">
+        <div class="run-header">
+          <h2>Últimas ejecuciones</h2>
+          <button class="ghost" id="refresh" type="button">Refrescar</button>
+        </div>
+        <div id="runs" class="runs"></div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

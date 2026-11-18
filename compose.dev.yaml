@@ -1,0 +1,24 @@
+# Overrides for developing the factory on the host.
+#
+#   mkdir -p .factory-dev
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d postgres opencode
+#   FACTORY_DATA_DIR="$PWD/.factory-dev" \
+#   FACTORY_OPENCODE_URL=http://127.0.0.1:14096 \
+#   DATABASE_URL=postgres://factory:TU_PASSWORD@127.0.0.1:15432/factory \
+#   bun run src/index.ts
+#
+# Only the isolated factory services are published, on high local ports, so the
+# host's own OpenCode on 4096 is never touched. The .factory-dev directory is
+# mounted at the same absolute path in the OpenCode container, so worktrees are
+# visible to the agents. Do not start the factory service from this override
+# while also running it on the host: two workers would share the same database.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:15432:5432"
+
+  opencode:
+    ports:
+      - "127.0.0.1:14096:4096"
+    volumes:
+      - "${PWD}/.factory-dev:${PWD}/.factory-dev"

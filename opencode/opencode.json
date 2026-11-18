@@ -1,0 +1,6 @@
+# OpenCode global configuration for the factory runtime.
+# Agent profiles live in ../squads/software-development/agents and are mounted
+# into this directory by docker compose.
+{
+  "$schema": "https://opencode.ai/config.json"
+}

@@ -1,0 +1,20 @@
+{
+  "name": "software-factory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI software factory: GitHub Issues -> OpenCode squad -> Pull Request",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "web": "bun run web/server.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "github:check": "bun run scripts/github-check.ts",
+    "opencode:check": "bun run scripts/opencode-check.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}

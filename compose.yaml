@@ -1,0 +1,95 @@
+name: software-factory
+
+# `docker compose up --build -d` starts the whole stack:
+#   postgres  -> state, artifacts, events
+#   opencode  -> isolated agent runtime (not the host's OpenCode)
+#   factory   -> orchestrator; talks to opencode over the compose network
+# The factory service does not spawn OpenCode itself; Compose starts it as a
+# sibling container so it can be scaled/replaced independently later.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-factory}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-factory}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  opencode:
+    build:
+      context: .
+    command: ["/usr/local/bin/opencode-entrypoint.sh"]
+    working_dir: /data
+    environment:
+      # Runtime aislado: todo el estado vive dentro del contenedor/volumen.
+      # No montes aquí ~/.config/opencode ni ~/.local/share/opencode del host.
+      HOME: /data/opencode/home
+      XDG_CONFIG_HOME: /config
+      XDG_DATA_HOME: /data/opencode/data
+      XDG_CACHE_HOME: /data/opencode/cache
+      XDG_STATE_HOME: /data/opencode/state
+      # Solo credenciales del runtime de agentes. No pasamos GITHUB_TOKEN ni
+      # DATABASE_URL a este contenedor: los agentes ejecutan shell.
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD}
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-opencode}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      - factory-data:/data
+      - ./opencode/opencode.json:/config/opencode/opencode.json:ro
+      - ./squads/software-development/agents:/config/opencode/agents:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -u \"opencode:$${OPENCODE_SERVER_PASSWORD}\" http://127.0.0.1:4096/api/info >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  factory:
+    build:
+      context: .
+    command: ["bun", "run", "src/index.ts"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opencode:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      FACTORY_DATA_DIR: /data
+      FACTORY_OPENCODE_URL: http://opencode:4096
+      FACTORY_PORT: 3000
+    volumes:
+      - factory-data:/data
+    ports:
+      - "127.0.0.1:${FACTORY_HOST_PORT:-3000}:3000"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+    command: ["bun", "run", "web/server.ts"]
+    environment:
+      FACTORY_API_URL: http://factory:3000
+      WEB_PORT: 8080
+      FACTORY_API_TOKEN: ${FACTORY_API_TOKEN:-}
+    depends_on:
+      - factory
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-8080}:8080"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  factory-data:
