@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { hasRework, parseTriageResult } from "../src/domain/triage.ts";
 
 describe("feedback triage parser", () => {

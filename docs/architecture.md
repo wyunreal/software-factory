@@ -2,37 +2,44 @@
 
 ## Guiding principle
 
-OpenCode is the **agent runtime**, not the global orchestrator. The orchestrator
-is a dedicated service that decides what runs, when, and by whom. This makes it
-possible to replace the runtime without rewriting the workflow.
+OpenCode is the **agent runtime**, not the global orchestrator. The factory
+separates **trigger detection** (`TriggerWatcher`) from **job execution**
+(`RunWorker` + `Workflow`). The watcher only decides that a run needs work and
+enqueues a job; the worker owns state transitions and invokes agents.
 
 ```mermaid
 flowchart LR
-  W["webapp :8080"] -->|repo + issue| O["Orchestrator"]
-  O -->|runs · artifacts · events| DB[("PostgreSQL")]
-  O -->|sessions · prompts| OC["OpenCode"]
-  O -->|clone · commit · push| G["Git worktrees"]
-  G -->|branch + PR| GH["GitHub Issue + PR"]
-  GH -->|issue · comments · reviews| O
+  W["webapp :8080"] -->|repo + issue| O["API / TriggerWatcher"]
+  GH["GitHub PR · reviews · comments"] --> O
+  O -->|run_jobs| Q[("PostgreSQL")]
+  Q -->|claim| R["RunWorker"]
+  R -->|state machine| WF["Workflow"]
+  WF -->|sessions · prompts| OC["OpenCode"]
+  WF -->|clone · commit · push| G["Git worktrees"]
+  G -->|branch + PR| GH
 ```
 
 The repo and issue arrive at runtime from the webapp or `POST /api/runs`.
+Worktrees are prepared without running any command: the Planner runs first, the
+Builder performs setup/build/tests, and a verifier agent runs the test gate.
 
 ## Components
 
 | Component | Responsibility |
 | --- | --- |
 | `src/index.ts` | bootstrap, configuration validation, shutdown |
-| `src/api.ts` | HTTP API, including `POST /api/runs` (repo + issue URL) |
-| `web/` | webapp to start runs and inspect their state |
-| `src/orchestrator.ts` | single worker, delivered-run sync (`Done`, reviews) |
-| `src/workflow.ts` | ticket pipeline and state transitions |
+| `src/api.ts` | HTTP API; `POST /api/runs` creates a run and enqueues a job |
+| `web/` | Next.js webapp to start runs and inspect their state |
+| `src/trigger-watcher.ts` | detects PR activity and enqueues `run_jobs` only |
+| `src/run-worker.ts` | claims jobs and invokes the workflow |
+| `src/workflow.ts` | state machine, artifacts, agent orchestration, git plumbing |
 | `src/backlog/github.ts` | GitHub Issues connector (`BacklogPort`) |
 | `src/runtime/opencode.ts` | OpenCode Server client (`AgentRuntimePort`) |
-| `src/scm/git.ts` | per-repo clone, `.factory.yml`, worktrees, commits, tests, push |
-| `src/scm/github.ts` | idempotent Pull Request creation in the run's repo |
-| `src/store/postgres.ts` | persistence (`RunStore`) |
+| `src/scm/git.ts` | per-repo clone, worktrees, commits, diff, push |
+| `src/scm/github.ts` | PR creation, reviews, merge |
+| `src/store/postgres.ts` | persistence (`RunStore`, `run_jobs`) |
 | `src/domain/state.ts` | state machine and transition validation |
+| `src/domain/verification.ts` | verifier JSON parser |
 | `src/domain/ticket.ts` | ticket normalization and acceptance criteria |
 | `src/squad/prompts.ts` | role prompts and PR body |
 
@@ -42,15 +49,16 @@ logic.
 
 ## Workflow ownership
 
-Agents **do not** change state. The orchestrator:
+Agents **do not** change state. The workflow:
 
 1. validates that the transition is legal (`assertTransition`);
 2. persists the new state and an event;
-3. runs the corresponding gate.
+3. invokes the corresponding agent or gate.
 
 An agent may recommend that a task is finished, but it cannot declare it
-finished. The Reviewer only provides a verdict; the orchestrator decides whether
-that means `DELIVERY`, `REWORK`, or `BLOCKED`.
+finished. The Reviewer only provides a verdict; the workflow decides whether
+that means `DELIVERY`, `REWORK`, or `BLOCKED`. The TriggerWatcher can only
+enqueue jobs, never transition a run.
 
 ## State machine
 
@@ -99,9 +107,9 @@ The base repository is cloned once into `/data/repos/<repo>/`. The worktree is
 created from `origin/<base>` and reused if the process restarts. Agents never
 share a directory.
 
-The orchestrator is the only actor that runs `git add`, `commit`, `push`, and
+The workflow is the only actor that runs `git add`, `commit`, `push`, and
 creates the PR. Agent prompts explicitly forbid rewriting history. The Builder
-works on the working tree and the orchestrator commits when it finishes.
+works on the working tree and the workflow commits when it finishes.
 
 ## Artifacts
 
@@ -109,8 +117,8 @@ works on the working tree and the orchestrator commits when it finishes.
 agents:
 
 - the plan feeds the Builder, QA, and Reviewer;
-- the build report feeds QA;
-- the test output and QA report feed the Reviewer;
+- the build report (including setup/test results) feeds QA;
+- the verifier report and QA report feed the Reviewer;
 - the Reviewer verdict decides the transition;
 - the PR is built from all of them.
 
@@ -149,8 +157,8 @@ processing of the same run (leases) is left for Phase 2.
 - The container only mounts the data volume and the agents; not the host home.
 - The target repo is resolved per run from the webapp/API; the GitHub token's
   permissions decide what can be cloned and pushed.
-- `.factory.yml` is executed from the target repo: treat it as trusted code and
-  do not point the factory at untrusted repos.
+- Build and test commands are executed by agents inside the OpenCode container;
+  treat the target repo as trusted code.
 
 ### OpenCode runtime isolation
 

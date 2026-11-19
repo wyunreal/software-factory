@@ -12,14 +12,14 @@ with state, artifacts, and quality gates, running locally with Docker Compose.
 
 Included:
 
-- A dedicated orchestrator (Bun + TypeScript), separate from the agent runtime.
+- A dedicated orchestrator (Node.js + TypeScript), separate from the agent runtime.
 - PostgreSQL for runs, artifacts, and events.
 - GitHub Issues connector: webapp/API with repo + issue URL,
   claim, labels, comments, and closure.
 - OpenCode Server as the runtime; one agent profile per role.
 - Planner, Builder, QA, and Reviewer with distinct permissions.
 - An isolated worktree per run and a `factory/<ticket>-<run>` branch.
-- Target repo resolved at runtime, with `.factory.yml` for setup/test.
+- Target repo resolved at runtime; agents detect the toolchain and run build/tests.
 - Deterministic test gate and review verdict.
 - Review feedback: `CHANGES_REQUESTED` rework on the same PR, comment triage
   (`NO_ACTION`/`REWORK`), and opt-in auto-merge after a human `APPROVED` review.
@@ -72,7 +72,7 @@ Planned work:
 - Per-ticket budget (tokens/cost) and automatic cutoff.
 - Metrics: `Ready → PR` lead time, PR acceptance rate, rework cycles, cost per
   ticket, incidents introduced.
-- Dashboard (Next.js) and OpenTelemetry traces.
+- Dashboard improvements (artifacts, logs, filters).
 - Dynamic worker scaling.
 - Advanced human-feedback routing across tickets and squads.
 - Mandatory human approval policies for destructive migrations, security

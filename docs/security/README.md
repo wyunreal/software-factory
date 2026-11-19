@@ -5,8 +5,8 @@
 - This phase is designed for **local execution**.
 - The OpenCode runtime is a separate container; the factory only talks to it
   over HTTP.
-- The orchestrator owns state, commits, pushes, and PR creation. Agents cannot
-  declare work finished.
+- The workflow owns state, commits, pushes, and PR creation. The TriggerWatcher
+  only enqueues jobs. Agents cannot declare work finished.
 - The Reviewer and Planner are read-only; the Builder can edit; QA can only edit
   test files.
 
@@ -24,10 +24,10 @@
 
 ## Trust boundaries
 
-`FACTORY_SETUP_CMD`, `FACTORY_TEST_CMD`, and `.factory.yml` commands run in the
-factory container and inherit its environment. Only point the factory at trusted
-repositories and trusted `.factory.yml` files. A hostile repo could read
-available credentials.
+`FACTORY_SETUP_CMD` and `FACTORY_TEST_CMD` are hints for the agents. Setup, build
+and test commands run inside the OpenCode container, which has provider
+credentials but no GitHub or database credentials. Only point the factory at
+trusted repositories; a hostile repo could read the provider key.
 
 For multi-user or public deployments, move setup/test execution to a runner
 without secrets and add stronger sandboxing.

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { GitHubIssuesBacklog } from "../src/backlog/github.ts";
 import type { GithubConfig } from "../src/config.ts";
 import type { Run, Ticket } from "../src/domain/types.ts";

@@ -1,5 +1,6 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GitWorkspace } from "../src/scm/git.ts";
@@ -58,11 +59,11 @@ function makeConfig(dataDir: string): FactoryConfig {
 }
 
 function run(cmd: string[], cwd: string): void {
-  const result = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
-  if (result.exitCode !== 0) {
-    throw new Error(
-      `${cmd.join(" ")} failed: ${new TextDecoder().decode(result.stderr)}`,
-    );
+  try {
+    execFileSync(cmd[0]!, cmd.slice(1), { cwd, stdio: "pipe" });
+  } catch (error) {
+    const stderr = (error as { stderr?: Buffer }).stderr?.toString() ?? "";
+    throw new Error(`${cmd.join(" ")} failed: ${stderr}`);
   }
 }
 
@@ -100,12 +101,8 @@ function makeRun(repoUrl: string): Run {
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe("git workspace per-repo", () => {
-  test("clones the run repo, creates a worktree and reads .factory.yml", async () => {
+  test("clones the run repo and creates an isolated worktree", async () => {
     mkdirSync(join(origin, "src"), { recursive: true });
-    writeFileSync(
-      join(origin, ".factory.yml"),
-      "setup: 'true'\ntest: 'true'\n",
-    );
     writeFileSync(join(origin, "src", "main.txt"), "hello\n");
     run(["git", "init", "-q", "-b", "main"], origin);
     run(["git", "config", "user.email", "test@example.com"], origin);
@@ -116,9 +113,8 @@ describe("git workspace per-repo", () => {
     const workspace = new GitWorkspace(makeConfig(root), new Logger({}, "error"));
     const prepared = await workspace.prepare(makeRun(origin));
 
-    expect(prepared.setupCommand).toBe("true");
-    expect(prepared.testCommand).toBe("true");
     expect(prepared.directory).toContain("/worktrees/");
     expect(prepared.branch.startsWith("factory/gh-1-")).toBe(true);
+    expect(existsSync(join(prepared.directory, "src", "main.txt"))).toBe(true);
   });
 });

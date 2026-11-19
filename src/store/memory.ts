@@ -1,8 +1,12 @@
 import type { CreateRunOptions, RunPatch, RunStore } from "../ports.ts";
 import type {
   Artifact,
+  EnqueueJobInput,
   Run,
   RunEvent,
+  RunJob,
+  RunJobKind,
+  RunJobStatus,
   RunState,
   Ticket,
 } from "../domain/types.ts";
@@ -19,6 +23,8 @@ export class MemoryRunStore implements RunStore {
   private artifacts = new Map<string, Artifact[]>();
   private events = new Map<string, RunEvent[]>();
   private processedFeedback = new Set<string>();
+  private jobs = new Map<string, RunJob>();
+  private jobDedup = new Set<string>();
   private artifactId = 0;
   private eventId = 0;
 
@@ -156,6 +162,83 @@ export class MemoryRunStore implements RunStore {
     _kind: string,
   ): Promise<void> {
     this.processedFeedback.add(`${runId}:${feedbackId}`);
+  }
+
+  async enqueueJob(input: EnqueueJobInput): Promise<RunJob | null> {
+    if (this.jobDedup.has(input.dedupKey)) return null;
+    const at = nowIso();
+    const job: RunJob = {
+      id: crypto.randomUUID(),
+      kind: input.kind,
+      runId: input.runId,
+      repo: input.repo,
+      issueNumber: input.issueNumber ?? null,
+      prNumber: input.prNumber ?? null,
+      dedupKey: input.dedupKey,
+      payload: input.payload ?? {},
+      status: "pending",
+      attempts: 0,
+      availableAt: at,
+      createdAt: at,
+      claimedAt: null,
+      finishedAt: null,
+      lastError: null,
+    };
+    this.jobs.set(job.id, job);
+    this.jobDedup.add(job.dedupKey);
+    return structuredClone(job);
+  }
+
+  async claimNextJob(): Promise<RunJob | null> {
+    const now = nowIso();
+    const job = [...this.jobs.values()]
+      .filter(
+        (candidate) =>
+          candidate.status === "pending" && candidate.availableAt <= now,
+      )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+    if (!job) return null;
+    job.status = "running";
+    job.attempts += 1;
+    job.claimedAt = now;
+    return structuredClone(job);
+  }
+
+  async completeJob(id: string): Promise<void> {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    job.status = "done";
+    job.finishedAt = nowIso();
+    job.lastError = null;
+  }
+
+  async retryJob(id: string, error: string, delayMs: number): Promise<void> {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    job.status = "pending";
+    job.lastError = error;
+    job.claimedAt = null;
+    job.availableAt = new Date(Date.now() + delayMs).toISOString();
+  }
+
+  async failJob(id: string, error: string): Promise<void> {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    job.status = "failed";
+    job.lastError = error;
+    job.finishedAt = nowIso();
+  }
+
+  async resetRunningJobs(): Promise<number> {
+    let count = 0;
+    for (const job of this.jobs.values()) {
+      if (job.status !== "running") continue;
+      job.status = "pending";
+      job.claimedAt = null;
+      job.availableAt = nowIso();
+      count += 1;
+    }
+    return count;
   }
 
   private async update(id: string, patch: RunPatch): Promise<Run> {

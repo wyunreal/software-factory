@@ -2,10 +2,11 @@ import type {
   AgentRunResult,
   Artifact,
   CommitResult,
+  EnqueueJobInput,
   Run,
   RunEvent,
+  RunJob,
   RunState,
-  TestResult,
   Ticket,
 } from "./domain/types.ts";
 
@@ -57,6 +58,12 @@ export interface RunStore {
     feedbackId: string,
     kind: string,
   ): Promise<void>;
+  enqueueJob(input: EnqueueJobInput): Promise<RunJob | null>;
+  claimNextJob(): Promise<RunJob | null>;
+  completeJob(id: string): Promise<void>;
+  retryJob(id: string, error: string, delayMs: number): Promise<void>;
+  failJob(id: string, error: string): Promise<void>;
+  resetRunningJobs(): Promise<number>;
 }
 
 export interface BacklogPort {
@@ -85,12 +92,9 @@ export interface WorkspacePort {
   prepare(run: Run): Promise<{
     directory: string;
     branch: string;
-    setupCommand: string | null;
-    testCommand: string | null;
   }>;
   commit(run: Run, message: string): Promise<CommitResult>;
   diffStat(run: Run): Promise<string>;
-  runTests(run: Run): Promise<TestResult>;
   push(run: Run): Promise<void>;
 }
 

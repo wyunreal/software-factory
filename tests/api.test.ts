@@ -1,10 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { startApi, type ApiDependencies } from "../src/api.ts";
 import type { FactoryConfig } from "../src/config.ts";
 import type { GitHubIssuesBacklog } from "../src/backlog/github.ts";
 import { MemoryRunStore } from "../src/store/memory.ts";
 import { Logger } from "../src/logger.ts";
-import type { Orchestrator } from "../src/orchestrator.ts";
+import type { TriggerWatcher } from "../src/trigger-watcher.ts";
+import type { RunWorker } from "../src/run-worker.ts";
 import type { Ticket } from "../src/domain/types.ts";
 
 function makeConfig(port: number): FactoryConfig {
@@ -17,7 +18,7 @@ function makeConfig(port: number): FactoryConfig {
     stepTimeoutMs: 5000,
     testTimeoutMs: 5000,
     maxRework: 3,
-    testCommand: "bun test",
+    testCommand: "npm test",
     setupCommand: null,
     deliveryMode: "local",
     autoMerge: false,
@@ -69,22 +70,27 @@ function makeTicket(): Ticket {
   };
 }
 
-function setup(port: number) {
+async function setup(port: number) {
   const store = new MemoryRunStore();
   const backlog = {
     getTicket: async () => makeTicket(),
     claim: async () => undefined,
   } as unknown as GitHubIssuesBacklog;
-  const orchestrator = {
+  const watcher = {
+    syncNow: async () => undefined,
+    status: () => ({}),
+  } as unknown as TriggerWatcher;
+  const worker = {
     workOnce: async () => undefined,
     status: () => ({}),
-    syncNow: async () => undefined,  } as unknown as Orchestrator;
+  } as unknown as RunWorker;
   const runtime = { health: async () => undefined } as unknown as ApiDependencies["runtime"];
 
-  const server = startApi({
+  const server = await startApi({
     config: makeConfig(port),
     store,
-    orchestrator,
+    watcher,
+    worker,
     runtime,
     backlog,
     logger: new Logger({}, "error"),
@@ -95,7 +101,7 @@ function setup(port: number) {
 describe("POST /api/runs", () => {
   test("creates a run from repo + issue URL", async () => {
     const port = 19100 + Math.floor(Math.random() * 500);
-    const { server, store } = setup(port);
+    const { server, store } = await setup(port);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/runs`, {
         method: "POST",
@@ -112,6 +118,10 @@ describe("POST /api/runs", () => {
       expect(run?.repoUrl).toBe("https://github.com/acme/app.git");
       expect(run?.ticket.repo).toBe("acme/app");
       expect(run?.state).toBe("CLAIMED");
+
+      const job = await store.claimNextJob();
+      expect(job?.kind).toBe("start_issue");
+      expect(job?.runId).toBe(run?.id);
     } finally {
       server.stop(true);
     }
@@ -119,7 +129,7 @@ describe("POST /api/runs", () => {
 
   test("rejects a repo that does not match the issue", async () => {
     const port = 19650 + Math.floor(Math.random() * 300);
-    const { server } = setup(port);
+    const { server } = await setup(port);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/runs`, {
         method: "POST",

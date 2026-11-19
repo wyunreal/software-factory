@@ -2,19 +2,22 @@
 
 ## Run lifecycle
 
-1. The webapp or `POST /api/runs` receives repo + issue URL and creates a run
-   (`CLAIMED`).
+1. The webapp or `POST /api/runs` receives repo + issue URL, creates a run
+   (`CLAIMED`) and enqueues a `start_issue` job.
 2. The factory validates the issue/repo pair, fetches the issue, and applies
    `factory:in-progress` plus a comment.
-3. It clones the target repo and creates an isolated worktree in
-   `factory-data`.
-4. It reads `.factory.yml` from the base branch for setup/test.
-5. **Planner** explores the repo and produces `plan`.
-6. **Builder** implements and leaves changes uncommitted. The orchestrator
-   commits; agents are forbidden from rewriting history by prompt and permissions.
+3. The worker claims the job; it clones the target repo and creates an isolated
+   worktree in `factory-data`.
+4. **Planner** explores the repo and produces `plan`.
+5. **Builder** installs dependencies, implements the ticket, runs setup/build/
+   tests, and fixes failures. It leaves changes uncommitted.
+6. The workflow commits; agents are forbidden from rewriting history by prompt
+   and permissions.
 7. **QA** adds/reviews tests (test files only).
-8. The orchestrator runs the test command. On failure it returns to `BUILDING`
-   with the output as feedback, up to `FACTORY_MAX_REWORK`.
+8. **Verifier** inspects the worktree, runs the checks the project uses (tests,
+   build, lint, or an equivalent) and returns structured JSON.
+   On failure the run returns to `BUILDING` with the output as feedback, up to
+   `FACTORY_MAX_REWORK`. With no tests, the gate is skipped.
 9. **Reviewer** returns `VERDICT: PASS` or `VERDICT: FAIL`. A FAIL consumes a
    rework cycle.
 10. `DELIVERY` pushes the branch and creates a PR in the issue's repo with
@@ -58,11 +61,11 @@ flowchart TD
 | Artifact | Producer | Content |
 | --- | --- | --- |
 | `plan` | Planner | analysis, criteria, tasks, risks |
-| `build` | Builder | summary, changes, tests run |
+| `build` | Builder | summary, changes, setup/test commands and results |
 | `qa` | QA | test plan, tests added, result |
-| `tests` | Orchestrator | raw test command output |
+| `tests` | Verifier | structured verification result (command, exit code, output) |
 | `review` | Reviewer | verdict and findings |
-| `delivery` | Orchestrator | PR URL or local branch path |
+| `delivery` | Workflow | PR URL or local branch path |
 
 Agents communicate through artifacts, not only conversation.
 
@@ -73,12 +76,12 @@ If `FACTORY_API_TOKEN` is set, send `Authorization: Bearer <token>` on
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/health` | PostgreSQL, OpenCode, orchestrator |
-| GET | `/api/status` | orchestrator statistics |
+| GET | `/health` | PostgreSQL, OpenCode, trigger watcher and worker |
+| GET | `/api/status` | trigger watcher and worker statistics |
 | GET | `/api/runs` | latest runs (`?limit=`) |
 | GET | `/api/runs/:id` | run + artifacts + events |
-| POST | `/api/runs` | start with `repoUrl` + `issueUrl` |
-| POST | `/api/tick` | force a sync/work cycle |
+| POST | `/api/runs` | create a run and enqueue its start job |
+| POST | `/api/tick` | force a trigger scan and a worker cycle |
 
 ```bash
 curl -s -X POST http://127.0.0.1:13000/api/runs \
@@ -101,8 +104,9 @@ repo.
 | Agent | Permissions |
 | --- | --- |
 | `factory-planner` | read-only; no shell/edit |
-| `factory-builder` | read/edit/shell; no subagents |
+| `factory-builder` | read/edit/shell; no subagents; performs setup and tests |
 | `factory-qa` | shell + test-file editing only |
+| `factory-verifier` | read/shell only; runs the test gate |
 | `factory-reviewer` | read-only + read-only `git` |
 | `factory-feedback-triage` | read-only + `git`; `NO_ACTION`/`REWORK` |
 
@@ -114,11 +118,12 @@ ephemeral.
 | Path | Content |
 | --- | --- |
 | `src/index.ts` | startup, validation, shutdown |
-| `src/orchestrator.ts` | worker, delivered-run sync, closed-issue sync |
+| `src/trigger-watcher.ts` | PR activity detection; enqueues jobs only |
+| `src/run-worker.ts` | claims jobs and invokes the workflow |
 | `src/workflow.ts` | pipeline and state transitions |
 | `src/api.ts` | HTTP API |
-| `web/` | webapp |
-| `src/domain/` | types, state machine, issue parser, triage parser |
+| `web/` | Next.js webapp |
+| `src/domain/` | types, state machine, issue parser, triage/verification parsers |
 | `src/backlog/github.ts` | GitHub Issues connector |
 | `src/runtime/opencode.ts` | OpenCode HTTP client |
 | `src/scm/git.ts` | clone, worktrees, commits, tests, push |
@@ -132,9 +137,9 @@ ephemeral.
 ## Development
 
 ```bash
-bun install
-bun test
-bun run typecheck
+npm install
+npm test
+npm run typecheck
 ```
 
 To iterate on the orchestrator on the host, see

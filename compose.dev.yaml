@@ -5,7 +5,7 @@
 #   FACTORY_DATA_DIR="$PWD/.factory-dev" \
 #   FACTORY_OPENCODE_URL=http://127.0.0.1:14096 \
 #   DATABASE_URL=postgres://factory:TU_PASSWORD@127.0.0.1:15432/factory \
-#   bun run src/index.ts
+#   npm run dev
 #
 # Only the isolated factory services are published, on high local ports, so the
 # host's own OpenCode on 4096 is never touched. The .factory-dev directory is

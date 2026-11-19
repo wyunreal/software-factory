@@ -1,11 +1,14 @@
-import type { Artifact, Run, TestResult } from "./domain/types.ts";
+import type { Artifact, Run, RunJob } from "./domain/types.ts";
 import type { FactoryConfig } from "./config.ts";
 import { repositoryFromUrl } from "./config.ts";
 import type {
   AgentRuntimePort,
+  AutoMergePort,
   BacklogPort,
   DeliveryPort,
   FeedbackPort,
+  PullRequestReview,
+  PullRequestReviewComment,
   RunStore,
   WorkspacePort,
 } from "./ports.ts";
@@ -17,6 +20,7 @@ import {
   parseTriageResult,
   type TriageResult,
 } from "./domain/triage.ts";
+import { parseVerification } from "./domain/verification.ts";
 import {
   blockedComment,
   builderPrompt,
@@ -26,14 +30,20 @@ import {
   qaPrompt,
   reviewPrompt,
   triagePrompt,
+  verificationPrompt,
 } from "./squad/prompts.ts";
 import { nowIso, truncate } from "./util.ts";
-import { pullRequestNumberFromUrl } from "./scm/approvals.ts";
+import {
+  hasApprovedReview,
+  latestChangesRequestedReviews,
+  pullRequestNumberFromUrl,
+} from "./scm/approvals.ts";
 
 export const AGENTS = {
   planner: "factory-planner",
   builder: "factory-builder",
   qa: "factory-qa",
+  verifier: "factory-verifier",
   reviewer: "factory-reviewer",
   triage: "factory-feedback-triage",
 } as const;
@@ -46,6 +56,7 @@ export type WorkflowDependencies = {
   workspace: WorkspacePort;
   delivery: DeliveryPort;
   feedback: FeedbackPort | null;
+  autoMerge: AutoMergePort | null;
   logger: Logger;
 };
 
@@ -67,8 +78,6 @@ export class Workflow {
       run = await this.deps.store.updateRun(run.id, {
         worktree: prepared.directory,
         branch: prepared.branch,
-        setupCommand: prepared.setupCommand,
-        testCommand: prepared.testCommand,
       });
       await this.deps.store.addEvent(run.id, "workspace.ready", prepared);
 
@@ -121,6 +130,442 @@ export class Workflow {
     }
   }
 
+  async handleJob(runId: string, job: RunJob): Promise<void> {
+    if (job.kind === "start_issue") {
+      await this.execute(runId);
+      return;
+    }
+
+    await this.syncRun(runId);
+    const current = await this.deps.store.getRun(runId);
+    if (
+      current &&
+      current.state !== "HUMAN_REVIEW" &&
+      current.state !== "DONE" &&
+      current.state !== "BLOCKED"
+    ) {
+      await this.execute(runId);
+    }
+  }
+
+  async syncRun(runId: string): Promise<void> {
+    const run = await this.deps.store.getRun(runId);
+    if (!run || run.state !== "HUMAN_REVIEW") return;
+
+    if (await this.maybeReworkFromFeedback(run)) return;
+    if (await this.maybeTriageComments(run)) return;
+
+    try {
+      await this.maybeAutoMerge(run);
+    } catch (error) {
+      this.log.warn("auto-merge check failed", {
+        run: run.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (!(await this.deps.backlog.isDone(run.ticket))) return;
+    await this.deps.store.transition(run.id, "DONE");
+    await this.deps.store.addEvent(run.id, "run.done", { source: "github" });
+    this.log.info("run marked done", {
+      run: run.id,
+      ticket: run.ticket.ref,
+    });
+  }
+
+  private async maybeTriageComments(run: Run): Promise<boolean> {
+    if (
+      !this.deps.config.triagePrComments ||
+      !this.deps.feedback ||
+      !this.deps.autoMerge ||
+      !run.prUrl
+    ) {
+      return false;
+    }
+
+    const repository = run.ticket.repo ?? repositoryFromUrl(run.repoUrl);
+    const number = pullRequestNumberFromUrl(run.prUrl);
+    if (!repository || !number) return false;
+
+    const pr = await this.deps.autoMerge.getPullRequestState(repository, number);
+    if (pr.merged || pr.state !== "open") return false;
+
+    const [reviews, reviewComments, conversationComments, factoryComments] =
+      await Promise.all([
+        this.deps.autoMerge.getPullRequestReviews(repository, number),
+        this.deps.feedback.getPullRequestReviewComments(repository, number),
+        this.deps.feedback.getPullRequestConversationComments(repository, number),
+        this.factoryCommentIds(run.id),
+      ]);
+
+    const reviewsById = new Map(reviews.map((review) => [review.id, review]));
+    const commentIds: number[] = [];
+    const conversationCommentIds: number[] = [];
+    const inlineCommentIds: number[] = [];
+    const reviewIds: number[] = [];
+    const authors = new Set<string>();
+    const reviewers = new Set<string>();
+    const sections: string[] = ["# New pull-request comments", ""];
+    const general: string[] = [];
+    const inline: string[] = [];
+    const reviewSummaries: string[] = [];
+
+    const considered = async (
+      id: number,
+      user: string,
+      association: string,
+      body: string,
+      processedId: string,
+    ): Promise<boolean> => {
+      if (!id || !body.trim() || factoryComments.has(id)) return false;
+      if (this.looksLikeFactoryComment(body)) return false;
+      if (!this.isAllowedFeedbackAuthor(user, association)) return false;
+      if (await this.deps.store.hasProcessedFeedback(run.id, processedId)) {
+        return false;
+      }
+      return true;
+    };
+
+    for (const comment of conversationComments) {
+      if (
+        !(await considered(
+          comment.id,
+          comment.user,
+          comment.authorAssociation,
+          comment.body,
+          `comment:${comment.id}`,
+        ))
+      ) {
+        continue;
+      }
+      commentIds.push(comment.id);
+      conversationCommentIds.push(comment.id);
+      authors.add(comment.user);
+      general.push(
+        `- id=${comment.id} @${comment.user} (${comment.authorAssociation || "UNKNOWN"}): ${truncate(comment.body.trim(), 3_000)}`,
+      );
+    }
+
+    for (const comment of reviewComments) {
+      const review = reviewsById.get(comment.reviewId);
+      if (review?.state === "APPROVED" || review?.state === "CHANGES_REQUESTED") {
+        continue;
+      }
+      if (
+        !(await considered(
+          comment.id,
+          comment.user,
+          comment.authorAssociation,
+          comment.body,
+          `comment:${comment.id}`,
+        ))
+      ) {
+        continue;
+      }
+      commentIds.push(comment.id);
+      authors.add(comment.user);
+      inlineCommentIds.push(comment.id);
+      if (comment.reviewId) {
+        reviewIds.push(comment.reviewId);
+        if (review?.user) reviewers.add(review.user);
+      }
+      const location = comment.path
+        ? `${comment.path}${comment.line ? `:${comment.line}` : ""}`
+        : "(general)";
+      inline.push(
+        `- id=${comment.id} @${comment.user} on ${location}: ${truncate(comment.body.trim(), 3_000)}`,
+      );
+    }
+
+    for (const review of reviews) {
+      if (review.state !== "COMMENTED" || !review.body.trim()) continue;
+      if (
+        !(await considered(
+          review.id,
+          review.user,
+          "COLLABORATOR",
+          review.body,
+          `review:${review.id}`,
+        ))
+      ) {
+        continue;
+      }
+      reviewIds.push(review.id);
+      authors.add(review.user);
+      reviewers.add(review.user);
+      reviewSummaries.push(
+        `- id=${review.id} @${review.user}: ${truncate(review.body.trim(), 3_000)}`,
+      );
+    }
+
+    if (commentIds.length === 0 && reviewIds.length === 0) return false;
+
+    if (general.length > 0) {
+      sections.push("## General comments", "", ...general, "");
+    }
+    if (inline.length > 0) {
+      sections.push("## Inline review comments", "", ...inline, "");
+    }
+    if (reviewSummaries.length > 0) {
+      sections.push("## Review summaries", "", ...reviewSummaries, "");
+    }
+
+    const content = sections.join("\n").trim();
+    const uniqueReviewIds = [...new Set(reviewIds)];
+    const uniqueCommentIds = [...new Set(commentIds)];
+    const uniqueAuthors = [...authors];
+
+    await this.deps.store.addArtifact(run.id, {
+      name: "triage-input",
+      agent: null,
+      content,
+      metadata: {
+        commentIds: uniqueCommentIds,
+        conversationCommentIds,
+        inlineCommentIds,
+        reviewIds: uniqueReviewIds,
+        authors: uniqueAuthors,
+        reviewers: [...reviewers],
+      },
+    });
+    await this.deps.store.transition(run.id, "TRIAGING", {
+      finishedAt: null,
+      blockReason: null,
+    });
+    await this.deps.store.addEvent(run.id, "triage.requested", {
+      comments: uniqueCommentIds.length,
+      reviews: uniqueReviewIds.length,
+      authors: uniqueAuthors,
+    });
+    this.log.info("pull-request comments queued for triage", {
+      run: run.id,
+      comments: uniqueCommentIds.length,
+      reviews: uniqueReviewIds.length,
+    });
+    return true;
+  }
+
+  private isAllowedFeedbackAuthor(user: string, association: string): boolean {
+    if (this.deps.config.feedbackUsers.length > 0) {
+      return this.deps.config.feedbackUsers.includes(user.toLowerCase());
+    }
+    return ["OWNER", "MEMBER", "COLLABORATOR"].includes(association);
+  }
+
+  private async factoryCommentIds(runId: string): Promise<Set<number>> {
+    const events = await this.deps.store.listEvents(runId);
+    const ids = new Set<number>();
+    for (const event of events) {
+      if (event.type !== "factory.comment" || !isRecord(event.data)) continue;
+      const id = Number(event.data.id);
+      if (Number.isInteger(id) && id > 0) ids.add(id);
+    }
+    return ids;
+  }
+
+  private looksLikeFactoryComment(body: string): boolean {
+    const text = body.trim();
+    return (
+      /^[🤖✅🛠️]\s*\*\*Software Factory\*\*/.test(text) ||
+      text.startsWith("Addressed in the latest commit") ||
+      text.startsWith("Ready for re-review")
+    );
+  }
+
+  private async maybeReworkFromFeedback(run: Run): Promise<boolean> {
+    if (
+      !this.deps.config.reworkOnChangesRequested ||
+      !this.deps.feedback ||
+      !this.deps.autoMerge ||
+      !run.prUrl
+    ) {
+      return false;
+    }
+
+    const repository = run.ticket.repo ?? repositoryFromUrl(run.repoUrl);
+    const number = pullRequestNumberFromUrl(run.prUrl);
+    if (!repository || !number) return false;
+
+    const pr = await this.deps.autoMerge.getPullRequestState(repository, number);
+    if (pr.merged || pr.state !== "open") return false;
+
+    const reviews = await this.deps.autoMerge.getPullRequestReviews(
+      repository,
+      number,
+    );
+    const pendingReviews: PullRequestReview[] = [];
+    for (const review of latestChangesRequestedReviews(reviews)) {
+      if (
+        await this.deps.store.hasProcessedFeedback(run.id, `review:${review.id}`)
+      ) {
+        continue;
+      }
+      pendingReviews.push(review);
+    }
+    if (pendingReviews.length === 0) return false;
+
+    const reviewIds = new Set(pendingReviews.map((review) => review.id));
+    const comments = await this.deps.feedback.getPullRequestReviewComments(
+      repository,
+      number,
+    );
+    const feedbackComments = comments.filter((comment) =>
+      reviewIds.has(comment.reviewId),
+    );
+    const reviewers = [...new Set(pendingReviews.map((review) => review.user))];
+    const content = formatFeedback(pendingReviews, feedbackComments);
+
+    if (run.reworkCount >= this.deps.config.maxRework) {
+      for (const review of pendingReviews) {
+        await this.deps.store.markFeedbackProcessed(
+          run.id,
+          `review:${review.id}`,
+          "changes_requested",
+        );
+      }
+      await this.deps.store.transition(run.id, "BLOCKED", {
+        blockReason: `Maximum rework cycles reached (${this.deps.config.maxRework}) after human review feedback`,
+        finishedAt: nowIso(),
+      });
+      await this.deps.store.addEvent(run.id, "run.blocked", {
+        reason: "Maximum rework cycles reached after human feedback",
+        reviewIds: [...reviewIds],
+      });
+      try {
+        await this.deps.backlog.comment(
+          run.ticket,
+          "⛔ **Software Factory: rework budget exhausted**\n\n" +
+            "A human requested changes but the maximum rework count was reached. " +
+            "A human needs to take over.",
+        );
+        await this.deps.backlog.moveToBlocked(run.ticket);
+      } catch (error) {
+        this.log.warn("failed to update issue after feedback budget", {
+          run: run.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return true;
+    }
+
+    const inlineCommentIds = feedbackComments.map((comment) => comment.id);
+    await this.deps.store.addArtifact(run.id, {
+      name: "feedback",
+      agent: null,
+      content,
+      metadata: {
+        reviewIds: [...reviewIds],
+        reviewers,
+        authors: reviewers,
+        commentIds: inlineCommentIds,
+        inlineCommentIds,
+        conversationCommentIds: [],
+        feedbackKey: buildFeedbackKey(
+          [...reviewIds].map(String),
+          inlineCommentIds,
+          [],
+        ),
+      },
+    });
+    await this.deps.store.transition(run.id, "REWORK", {
+      finishedAt: null,
+      reworkCount: run.reworkCount + 1,
+      blockReason: null,
+    });
+    for (const review of pendingReviews) {
+      await this.deps.store.markFeedbackProcessed(
+        run.id,
+        `review:${review.id}`,
+        "changes_requested",
+      );
+    }
+    for (const commentId of inlineCommentIds) {
+      await this.deps.store.markFeedbackProcessed(
+        run.id,
+        `comment:${commentId}`,
+        "review_comment",
+      );
+    }
+    await this.deps.store.addEvent(run.id, "feedback.rework_requested", {
+      repository,
+      pullRequest: number,
+      reviewers,
+      reviewIds: [...reviewIds],
+      commentIds: feedbackComments.map((comment) => comment.id),
+    });
+
+    try {
+      await this.deps.backlog.moveToInProgress(run.ticket);
+    } catch (error) {
+      this.log.warn("failed to move issue back to in-progress", {
+        run: run.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    try {
+      const ack = await this.deps.feedback.commentPullRequest(
+        repository,
+        number,
+        "🛠️ **Software Factory**\n\nI've picked up the requested changes and will update this PR. " +
+          "The requested items will be addressed in a new commit.",
+      );
+      await this.deps.store.addEvent(run.id, "factory.comment", {
+        id: ack.id,
+        kind: "changes_requested.ack",
+      });
+    } catch (error) {
+      this.log.warn("failed to acknowledge review feedback", {
+        run: run.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    this.log.info("rework requested from human review", {
+      run: run.id,
+      repository,
+      pullRequest: number,
+      reviewers,
+      reworkCount: run.reworkCount + 1,
+    });
+    return true;
+  }
+
+  private async maybeAutoMerge(run: Run): Promise<void> {
+    if (!this.deps.config.autoMerge || !this.deps.autoMerge || !run.prUrl) return;
+    const repository = run.ticket.repo ?? repositoryFromUrl(run.repoUrl);
+    const number = pullRequestNumberFromUrl(run.prUrl);
+    if (!repository || !number) return;
+
+    const pr = await this.deps.autoMerge.getPullRequestState(repository, number);
+    if (pr.merged || pr.state !== "open" || pr.draft) return;
+    if (pr.mergeable !== true || pr.mergeableState !== "clean") return;
+
+    const reviews = await this.deps.autoMerge.getPullRequestReviews(
+      repository,
+      number,
+    );
+    if (!hasApprovedReview(reviews)) return;
+
+    await this.deps.autoMerge.mergePullRequest(
+      repository,
+      number,
+      this.deps.config.mergeMethod,
+      pr.headSha,
+    );
+    await this.deps.store.addEvent(run.id, "run.auto_merged", {
+      repository,
+      pullRequest: number,
+      method: this.deps.config.mergeMethod,
+      sha: pr.headSha,
+    });
+    this.log.info("pull request auto-merged", {
+      run: run.id,
+      repository,
+      pullRequest: number,
+      method: this.deps.config.mergeMethod,
+    });
+  }
+
   private async plan(run: Run): Promise<void> {
     run = await this.ensureTransition(run, "PLANNING");
     const result = await this.runAgent(
@@ -146,7 +591,11 @@ export class Workflow {
       "feedback",
     );
 
-    const feedback: { testOutput?: string; review?: string; feedback?: string } = {};
+    const feedback: {
+      testOutput?: string;
+      review?: string;
+      feedback?: string;
+    } = {};
     if (isRecord(tests?.metadata) && tests.metadata.passed === false) {
       feedback.testOutput = tests.content;
     }
@@ -160,7 +609,10 @@ export class Workflow {
     const result = await this.runAgent(
       run,
       AGENTS.builder,
-      builderPrompt(run.ticket, plan.content, feedback),
+      builderPrompt(run.ticket, plan.content, feedback, {
+        setup: run.setupCommand ?? this.deps.config.setupCommand,
+        test: run.testCommand ?? this.deps.config.testCommand,
+      }),
       "Implement the ticket in the worktree.",
     );
     await this.saveArtifact(run, "build", AGENTS.builder, result.text);
@@ -179,6 +631,7 @@ export class Workflow {
     run = await this.ensureTransition(run, "QA");
     const plan = await this.requireArtifact(run, "plan");
     const buildReport = await this.requireArtifact(run, "build");
+    const testCommand = run.testCommand;
 
     const result = await this.runAgent(
       run,
@@ -187,7 +640,7 @@ export class Workflow {
         run.ticket,
         plan.content,
         buildReport.content,
-        this.deps.config.testCommand,
+        testCommand,
       ),
       "Verify the implementation and strengthen the tests.",
     );
@@ -205,32 +658,51 @@ export class Workflow {
 
   private async test(run: Run): Promise<void> {
     run = await this.ensureTransition(run, "TESTING");
-    const result = await this.deps.workspace.runTests(run);
+    const result = await this.runAgent(
+      run,
+      AGENTS.verifier,
+      verificationPrompt({
+        ticket: run.ticket,
+        testHint: run.testCommand ?? this.deps.config.testCommand,
+      }),
+      "Run the project test suite and report the result.",
+    );
+    const verification = parseVerification(result.text);
     await this.saveArtifact(
       run,
       "tests",
-      null,
-      formatTestReport(result),
-      result,
+      AGENTS.verifier,
+      result.text,
+      verification,
     );
     await this.deps.store.addEvent(run.id, "tests.completed", {
-      passed: result.passed,
-      skipped: result.skipped,
-      exitCode: result.exitCode,
-      timedOut: result.timedOut,
-      durationMs: result.durationMs,
+      valid: verification.valid,
+      passed: verification.passed,
+      skipped: verification.skipped,
+      exitCode: verification.exitCode,
+      timedOut: verification.timedOut,
+      durationMs: verification.durationMs,
     });
 
-    if (result.passed) {
+    if (!verification.valid) {
+      await this.reworkOrBlock(
+        run,
+        `Verifier returned an invalid result:\n${truncate(verification.output, 1_500)}`,
+        "tests",
+      );
+      return;
+    }
+
+    if (verification.skipped || verification.passed) {
       await this.transitionTo(run, "REVIEWING");
       return;
     }
 
     await this.reworkOrBlock(
       run,
-      `Automated tests failed (exit ${result.exitCode ?? "killed"}${
-        result.timedOut ? ", timed out" : ""
-      }):\n${truncate(result.output, 1_500)}`,
+      `Automated tests failed (exit ${verification.exitCode ?? "killed"}${
+        verification.timedOut ? ", timed out" : ""
+      }):\n${truncate(verification.output, 1_500)}`,
       "tests",
     );
   }
@@ -797,26 +1269,35 @@ export function parseVerdict(text: string): "PASS" | "FAIL" {
   return match?.[1]?.toUpperCase() === "PASS" ? "PASS" : "FAIL";
 }
 
-function formatTestReport(result: TestResult): string {
-  const heading = result.skipped
-    ? "# Automated tests: SKIPPED"
-    : result.passed
-      ? "# Automated tests: PASSED"
-      : "# Automated tests: FAILED";
-  const meta = result.skipped
-    ? result.output
-    : [
-        `Command: \`${result.command}\``,
-        `Exit code: ${result.exitCode ?? "killed"}`,
-        `Timed out: ${result.timedOut}`,
-        `Duration: ${result.durationMs} ms`,
-        "",
-        "Output:",
-        "```",
-        result.output || "(no output)",
-        "```",
-      ].join("\n");
-  return `${heading}\n\n${meta}`;
+function formatFeedback(
+  reviews: PullRequestReview[],
+  comments: PullRequestReviewComment[],
+): string {
+  const parts = ["# Human review feedback", ""];
+  for (const review of reviews) {
+    parts.push(
+      `## Review by @${review.user} — CHANGES_REQUESTED`,
+      "",
+      truncate(review.body.trim() || "(no summary body)", 8_000),
+      "",
+    );
+    const related = comments.filter(
+      (comment) => comment.reviewId === review.id,
+    );
+    if (related.length > 0) {
+      parts.push("### Inline comments", "");
+      for (const comment of related) {
+        const location = comment.path
+          ? `\`${comment.path}${comment.line ? `:${comment.line}` : ""}\``
+          : "(general)";
+        parts.push(
+          `- ${location} by @${comment.user}: ${truncate(comment.body.trim(), 2_000)}`,
+        );
+      }
+      parts.push("");
+    }
+  }
+  return parts.join("\n").trim();
 }
 
 function testsSummaryFromArtifact(artifact: Artifact): string {

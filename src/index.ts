@@ -7,9 +7,10 @@ import { OpencodeRuntime } from "./runtime/opencode.ts";
 import { GitWorkspace } from "./scm/git.ts";
 import { GitHubDelivery, LocalDelivery } from "./scm/github.ts";
 import { Workflow } from "./workflow.ts";
-import { Orchestrator } from "./orchestrator.ts";
+import { TriggerWatcher } from "./trigger-watcher.ts";
+import { RunWorker } from "./run-worker.ts";
 import { startApi } from "./api.ts";
-import { retry } from "./util.ts";
+import { retry, sleep } from "./util.ts";
 
 const logger = new Logger({ service: "software-factory" }, logLevelFromEnv(process.env.LOG_LEVEL));
 
@@ -36,6 +37,10 @@ async function main(): Promise<void> {
 
   const store = new PostgresRunStore(config.databaseUrl, logger);
   await retry(20, 2_000, "database migration", () => store.migrate());
+  const recovered = await store.resetRunningJobs();
+  if (recovered > 0) {
+    logger.warn("recovered interrupted jobs", { jobs: recovered });
+  }
 
   const runtime = new OpencodeRuntime(config.opencode, logger);
   await waitForOpencode(runtime, config.opencode.startupTimeoutMs, logger);
@@ -45,6 +50,7 @@ async function main(): Promise<void> {
         "factory-planner",
         "factory-builder",
         "factory-qa",
+        "factory-verifier",
         "factory-reviewer",
         "factory-feedback-triage",
       ],
@@ -76,21 +82,30 @@ async function main(): Promise<void> {
     workspace,
     delivery,
     feedback: githubDelivery,
+    autoMerge: githubDelivery,
     logger,
   });
-  const orchestrator = new Orchestrator(
+  const watcher = new TriggerWatcher(
     config,
     store,
-    backlog,
-    workflow,
     githubDelivery,
     githubDelivery,
     logger,
   );
+  const worker = new RunWorker(config, store, workflow, logger);
 
-  const server = startApi({ config, store, orchestrator, runtime, backlog, logger });
+  const server = await startApi({
+    config,
+    store,
+    watcher,
+    worker,
+    runtime,
+    backlog,
+    logger,
+  });
   runtime.start();
-  orchestrator.start();
+  watcher.start();
+  worker.start();
 
   log.info("software factory started", {
     port: config.port,
@@ -103,7 +118,8 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info("shutting down", { signal });
-    await orchestrator.stop();
+    await watcher.stop();
+    await worker.stop();
     runtime.stop();
     server.stop(true);
     await store.close();
@@ -131,7 +147,7 @@ async function waitForOpencode(
       return;
     } catch (error) {
       lastError = error;
-      await Bun.sleep(2_000);
+      await sleep(2_000);
     }
   }
   throw new Error(

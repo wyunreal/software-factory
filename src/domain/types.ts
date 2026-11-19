@@ -68,6 +68,40 @@ export type RunEvent = {
   createdAt: string;
 };
 
+export const RUN_JOB_KINDS = ["start_issue", "pr_sync"] as const;
+export type RunJobKind = (typeof RUN_JOB_KINDS)[number];
+
+export type RunJobStatus = "pending" | "running" | "done" | "failed";
+
+export type RunJob = {
+  id: string;
+  kind: RunJobKind;
+  runId: string;
+  repo: string;
+  issueNumber: number | null;
+  prNumber: number | null;
+  dedupKey: string;
+  payload: unknown;
+  status: RunJobStatus;
+  attempts: number;
+  availableAt: string;
+  createdAt: string;
+  claimedAt: string | null;
+  finishedAt: string | null;
+  lastError: string | null;
+};
+
+export type EnqueueJobInput = {
+  kind: RunJobKind;
+  runId: string;
+  repo: string;
+  issueNumber?: number | null;
+  prNumber?: number | null;
+  dedupKey: string;
+  payload?: unknown;
+};
+
+
 export type TestResult = {
   skipped: boolean;
   passed: boolean;

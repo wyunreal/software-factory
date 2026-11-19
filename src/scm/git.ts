@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { basename, join } from "node:path";
 import type { FactoryConfig } from "../config.ts";
 import { repositoryFromUrl } from "../config.ts";
-import type { CommitResult, Run, TestResult } from "../domain/types.ts";
+import type { CommitResult, Run } from "../domain/types.ts";
 import { slugify } from "../domain/ticket.ts";
 import type { WorkspacePort } from "../ports.ts";
 import type { Logger } from "../logger.ts";
@@ -14,11 +15,6 @@ type ExecResult = {
   stdout: string;
   stderr: string;
   timedOut: boolean;
-};
-
-type FactoryRepoConfig = {
-  setup?: string;
-  test?: string;
 };
 
 export class GitError extends Error {
@@ -83,8 +79,6 @@ export class GitWorkspace implements WorkspacePort {
   async prepare(run: Run): Promise<{
     directory: string;
     branch: string;
-    setupCommand: string | null;
-    testCommand: string | null;
   }> {
     const repoUrl = run.repoUrl;
     if (!repoUrl) {
@@ -92,11 +86,6 @@ export class GitWorkspace implements WorkspacePort {
     }
     const baseBranch = run.baseBranch;
     const repoDir = await this.ensureRepository(repoUrl);
-    const repoConfig = await this.readFactoryConfig(repoDir, baseBranch);
-    const setupCommand =
-      run.setupCommand ?? repoConfig.setup ?? this.config.setupCommand;
-    const testCommand =
-      run.testCommand ?? repoConfig.test ?? this.config.testCommand;
 
     const branch = run.branch ?? branchForRun(run);
     const directory =
@@ -114,8 +103,7 @@ export class GitWorkspace implements WorkspacePort {
       if (check.exitCode === 0 && check.stdout.trim() === "true") {
         this.logger.info("reusing existing worktree", { directory, branch });
         await this.configureWorktreeUser(directory);
-        await this.runSetup(directory, setupCommand);
-        return { directory, branch, setupCommand, testCommand };
+        return { directory, branch };
       }
     }
 
@@ -135,8 +123,7 @@ export class GitWorkspace implements WorkspacePort {
     );
     await this.configureWorktreeUser(directory);
     this.logger.info("worktree created", { directory, branch });
-    await this.runSetup(directory, setupCommand);
-    return { directory, branch, setupCommand, testCommand };
+    return { directory, branch };
   }
 
   async commit(run: Run, message: string): Promise<CommitResult> {
@@ -172,44 +159,6 @@ export class GitWorkspace implements WorkspacePort {
     return result.stdout.trim();
   }
 
-  async runTests(run: Run): Promise<TestResult> {
-    const command = run.testCommand ?? this.config.testCommand;
-    if (!command) {
-      return {
-        skipped: true,
-        passed: true,
-        exitCode: null,
-        timedOut: false,
-        command: "",
-        output:
-          "No test command configured (run.testCommand, .factory.yml or FACTORY_TEST_CMD); deterministic test gate skipped.",
-        durationMs: 0,
-      };
-    }
-    if (!run.worktree) throw new Error(`Run ${run.id} has no worktree`);
-
-    const started = Date.now();
-    const result = await this.execShell(
-      command,
-      run.worktree,
-      this.config.testTimeoutMs,
-    );
-    const output = truncate(
-      `${result.stdout}${result.stderr ? `\n${result.stderr}` : ""}`.trim(),
-      100_000,
-    );
-
-    return {
-      skipped: false,
-      passed: result.exitCode === 0 && !result.timedOut,
-      exitCode: result.exitCode,
-      timedOut: result.timedOut,
-      command,
-      output,
-      durationMs: Date.now() - started,
-    };
-  }
-
   async push(run: Run): Promise<void> {
     if (!run.worktree) throw new Error(`Run ${run.id} has no worktree`);
     if (!run.branch) throw new Error(`Run ${run.id} has no branch`);
@@ -230,45 +179,12 @@ export class GitWorkspace implements WorkspacePort {
     );
   }
 
-  private async readFactoryConfig(
-    repoDir: string,
-    baseBranch: string,
-  ): Promise<FactoryRepoConfig> {
-    const result = await this.exec(
-      ["show", `origin/${baseBranch}:.factory.yml`],
-      repoDir,
-      { allowFailure: true },
-    );
-    if (result.exitCode !== 0) return {};
-    return parseFactoryConfig(result.stdout);
-  }
-
   private async configureWorktreeUser(directory: string): Promise<void> {
     await this.git(["config", "user.name", this.config.git.authorName], directory);
     await this.git(
       ["config", "user.email", this.config.git.authorEmail],
       directory,
     );
-  }
-
-  private async runSetup(directory: string, command: string | null): Promise<void> {
-    if (!command) return;
-
-    this.logger.info("running setup command", { command, directory });
-    const result = await this.execShell(
-      command,
-      directory,
-      this.config.testTimeoutMs,
-    );
-    if (result.exitCode !== 0 || result.timedOut) {
-      const output = truncate(`${result.stdout}\n${result.stderr}`.trim(), 3_000);
-      throw new BlockedError(
-        `Setup command failed (exit ${result.exitCode ?? "killed"}${
-          result.timedOut ? ", timed out" : ""
-        }):\n${output}`,
-      );
-    }
-    this.logger.info("setup command finished");
   }
 
   private async commitsAhead(directory: string, baseBranch: string): Promise<number> {
@@ -307,70 +223,68 @@ export class GitWorkspace implements WorkspacePort {
     ];
     this.logger.debug("git", { args: args.join(" "), cwd });
 
-    const proc = Bun.spawn(["git", ...fullArgs], {
+    const result = await this.execProcess(
+      "git",
+      fullArgs,
       cwd,
-      env: this.gitEnv,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    const result = { exitCode, stdout, stderr, timedOut: false };
+      this.gitEnv,
+    );
 
-    if (exitCode !== 0 && !options.allowFailure) {
+    if (result.exitCode !== 0 && !options.allowFailure) {
       throw new GitError(
-        `git ${args[0] ?? ""} failed with exit code ${exitCode}: ${truncate(stderr.trim(), 2_000)}`,
-        exitCode,
-        stderr,
+        `git ${args[0] ?? ""} failed with exit code ${result.exitCode}: ${truncate(result.stderr.trim(), 2_000)}`,
+        result.exitCode,
+        result.stderr,
       );
     }
     return result;
   }
 
-  private async execShell(
+  private execProcess(
     command: string,
+    args: string[],
     cwd: string,
-    timeoutMs: number,
+    env: NodeJS.ProcessEnv,
+    timeoutMs?: number,
   ): Promise<ExecResult> {
-    this.logger.info("running command", { command, cwd });
-    const proc = Bun.spawn(["sh", "-lc", command], {
-      cwd,
-      env: { ...process.env, CI: "1" },
-      stdout: "pipe",
-      stderr: "pipe",
+    return new Promise((resolve) => {
+      const child = spawn(command, args, {
+        cwd,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const finish = (exitCode: number): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolve({ exitCode, stdout, stderr, timedOut });
+      };
+
+      if (timeoutMs) {
+        timer = setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGKILL");
+        }, timeoutMs);
+      }
+
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString();
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", (error) => {
+        stderr += `\n${error.message}`;
+        finish(127);
+      });
+      child.on("close", (code) => finish(code ?? 1));
     });
-
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      proc.kill(9);
-    }, timeoutMs);
-
-    try {
-      const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-      return { exitCode, stdout, stderr, timedOut };
-    } finally {
-      clearTimeout(timer);
-    }
   }
-}
-
-export function parseFactoryConfig(text: string): FactoryRepoConfig {
-  const result: FactoryRepoConfig = {};
-  for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*(setup|test)\s*:\s*(.+?)\s*$/.exec(line);
-    if (!match?.[1] || !match[2]) continue;
-    const value = match[2].replace(/^["']|["']$/g, "").trim();
-    if (!value) continue;
-    if (match[1] === "setup") result.setup = value;
-    else result.test = value;
-  }
-  return result;
 }

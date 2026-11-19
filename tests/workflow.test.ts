@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import type { FactoryConfig } from "../src/config.ts";
 import type {
   AgentRuntimePort,
@@ -11,7 +11,6 @@ import type {
   AgentRunResult,
   CommitResult,
   Run,
-  TestResult,
   Ticket,
 } from "../src/domain/types.ts";
 import { MemoryRunStore } from "../src/store/memory.ts";
@@ -41,7 +40,7 @@ function makeConfig(overrides: Partial<FactoryConfig> = {}): FactoryConfig {
     stepTimeoutMs: 5000,
     testTimeoutMs: 5000,
     maxRework: 3,
-    testCommand: "bun test",
+    testCommand: "npm test",
     setupCommand: null,
     deliveryMode: "github",
     autoMerge: false,
@@ -127,20 +126,15 @@ class FakeRuntime implements AgentRuntimePort {
 class FakeWorkspace implements WorkspacePort {
   commits: string[] = [];
   pushes = 0;
-  testResults: TestResult[] = [];
   commitResults: CommitResult[] = [];
 
   async prepare(): Promise<{
     directory: string;
     branch: string;
-    setupCommand: string | null;
-    testCommand: string | null;
   }> {
     return {
       directory: "/tmp/software-factory-test/worktree",
       branch: "factory/x",
-      setupCommand: null,
-      testCommand: "bun test",
     };
   }
 
@@ -151,20 +145,6 @@ class FakeWorkspace implements WorkspacePort {
 
   async diffStat(): Promise<string> {
     return "src/login.ts | 10 +++++";
-  }
-
-  async runTests(): Promise<TestResult> {
-    return (
-      this.testResults.shift() ?? {
-        skipped: false,
-        passed: true,
-        exitCode: 0,
-        timedOut: false,
-        command: "bun test",
-        output: "all tests passed",
-        durationMs: 10,
-      }
-    );
   }
 
   async push(): Promise<void> {
@@ -181,14 +161,12 @@ class FakeDelivery implements DeliveryPort {
 function setup(options: {
   config?: Partial<FactoryConfig>;
   responses?: Record<string, string[]>;
-  testResults?: TestResult[];
   commitResults?: CommitResult[];
 } = {}) {
   const store = new MemoryRunStore();
   const backlog = new FakeBacklog();
   const runtime = new FakeRuntime(options.responses);
   const workspace = new FakeWorkspace();
-  if (options.testResults) workspace.testResults = options.testResults;
   if (options.commitResults) workspace.commitResults = options.commitResults;
 
   const workflow = new Workflow({
@@ -199,6 +177,7 @@ function setup(options: {
     workspace,
     delivery: new FakeDelivery(),
     feedback: null,
+    autoMerge: null,
     logger: new Logger({}, "error"),
   });
 
@@ -214,15 +193,25 @@ async function createRun(store: MemoryRunStore): Promise<Run> {
   return run;
 }
 
-const failedTests: TestResult = {
+const VERIFY_PASS = JSON.stringify({
+  skipped: false,
+  passed: true,
+  exitCode: 0,
+  timedOut: false,
+  command: "npm test",
+  durationMs: 20,
+  output: "all tests passed",
+});
+
+const VERIFY_FAIL = JSON.stringify({
   skipped: false,
   passed: false,
   exitCode: 1,
   timedOut: false,
-  command: "bun test",
-  output: "1 test failed: login rejects invalid credentials",
+  command: "npm test",
   durationMs: 20,
-};
+  output: "1 test failed: login rejects invalid credentials",
+});
 
 describe("workflow", () => {
   test("runs planner, builder, QA, tests, review and delivery", async () => {
@@ -231,6 +220,7 @@ describe("workflow", () => {
         "factory-planner": ["# Plan\nDo the thing"],
         "factory-builder": ["# Implementation\nDone"],
         "factory-qa": ["# QA\nAll good"],
+        "factory-verifier": [VERIFY_PASS],
         "factory-reviewer": ["VERDICT: PASS\nLooks good"],
       },
     });
@@ -245,6 +235,7 @@ describe("workflow", () => {
       "factory-planner",
       "factory-builder",
       "factory-qa",
+      "factory-verifier",
       "factory-reviewer",
     ]);
     expect(workspace.pushes).toBe(1);
@@ -267,9 +258,9 @@ describe("workflow", () => {
         "factory-planner": ["# Plan"],
         "factory-builder": ["# Build 1", "# Build 2"],
         "factory-qa": ["# QA 1", "# QA 2"],
+        "factory-verifier": [VERIFY_FAIL, VERIFY_PASS],
         "factory-reviewer": ["VERDICT: PASS"],
       },
-      testResults: [failedTests, { ...failedTests, passed: true, exitCode: 0 }],
     });
     const run = await createRun(store);
 
@@ -292,6 +283,7 @@ describe("workflow", () => {
         "factory-planner": ["# Plan"],
         "factory-builder": ["# Build 1", "# Build 2"],
         "factory-qa": ["# QA 1", "# QA 2"],
+        "factory-verifier": [VERIFY_PASS, VERIFY_PASS],
         "factory-reviewer": ["VERDICT: FAIL\nMissing validation", "VERDICT: PASS"],
       },
     });
@@ -395,8 +387,8 @@ describe("workflow", () => {
         "factory-planner": ["# Plan"],
         "factory-builder": ["# Build 1", "# Build 2"],
         "factory-qa": ["# QA 1", "# QA 2"],
+        "factory-verifier": [VERIFY_FAIL, VERIFY_FAIL],
       },
-      testResults: [failedTests, failedTests],
     });
     const run = await createRun(store);
 

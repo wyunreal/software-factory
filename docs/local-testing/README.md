@@ -3,9 +3,9 @@
 ## 1. Fast tests
 
 ```bash
-bun install
-bun test
-bun run typecheck
+npm install
+npm test
+npm run typecheck
 ```
 
 Covers the state machine, issue parser, configuration, GitHub Issues adapter
@@ -29,7 +29,7 @@ target repo is cloned into `factory-data` when the first run starts.
 
 ```bash
 docker compose exec opencode sh -lc 'opencode debug paths'
-docker compose exec factory bun run scripts/opencode-check.ts
+docker compose exec factory npm run opencode-check
 ```
 
 Paths must be under `/config` and `/data`. `opencode-check` prints the URL and
@@ -38,7 +38,7 @@ fails if `FACTORY_OPENCODE_URL` is missing instead of assuming `127.0.0.1:4096`.
 ## 4. Validate GitHub
 
 ```bash
-docker compose exec factory bun run scripts/github-check.ts
+docker compose exec factory npm run github-check
 ```
 
 It validates the repo, creates missing labels, and lists issues that would be
@@ -103,7 +103,7 @@ Merge closes the issue; the factory marks the run `DONE` on the next sync.
 
 ## 7. Host development
 
-Only for changing the orchestrator with Bun on the host. Normal use needs only
+Only for changing the orchestrator with Node on the host. Normal use needs only
 `docker compose up`.
 
 ```bash
@@ -113,13 +113,25 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d postgres opencode
 FACTORY_DATA_DIR="$PWD/.factory-dev" \
 FACTORY_OPENCODE_URL=http://127.0.0.1:14096 \
 DATABASE_URL=postgres://factory:TU_PASSWORD@127.0.0.1:15432/factory \
-bun run src/index.ts
+npm run dev
 ```
 
 `.factory-dev` is mounted at the same absolute path in the OpenCode container,
 so host-created worktrees are visible to agents. Do not run the Compose
 `factory` service at the same time as the host process: two workers would share
 the database.
+
+The webapp is a Next.js app under `web/`. To run it on the host against a local
+factory API:
+
+```bash
+cd web
+npm install
+FACTORY_API_URL=http://127.0.0.1:13000 npm run dev
+```
+
+It listens on <http://127.0.0.1:8080> and proxies `/api/*` server-side, adding
+`FACTORY_API_TOKEN` when set.
 
 ## 8. Cleanup
 

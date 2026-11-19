@@ -49,7 +49,7 @@ container on an internal port, with its own config and data volume.
 | Guide | Contents |
 | --- | --- |
 | [Documentation index](docs/README.md) | all guides in one place |
-| [Getting started](docs/getting-started/README.md) | requirements, isolation, first run, GitHub token, `.factory.yml` |
+| [Getting started](docs/getting-started/README.md) | requirements, isolation, first run, GitHub token, toolchain detection |
 | [Configuration](docs/configuration/README.md) | models, auto-merge, rework, comment triage, env reference |
 | [Local testing](docs/local-testing/README.md) | tests, Compose, end-to-end runs, host development, troubleshooting |
 | [Operations](docs/operations/README.md) | lifecycle, states, artifacts, API, agents, project map |
@@ -66,9 +66,11 @@ future phases.
 ## Safety
 
 - `.env` is gitignored, should stay at `600`, and must never be committed.
-- Use a fine-grained GitHub token restricted to the target repo.
-- Run the factory only against trusted repositories: `.factory.yml` and test
-  commands execute in the factory container.
+- Use a GitHub token restricted to the target repos. Fine-grained PATs cannot
+  access private repos owned by another personal account, even as a collaborator;
+  use a classic `repo` token in that case.
+- Run the factory only against trusted repositories: agents execute build and
+  test commands in the OpenCode container.
 
 See [Security](docs/security/README.md) before exposing the webapp or API.
 

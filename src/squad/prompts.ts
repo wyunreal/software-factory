@@ -17,7 +17,12 @@ export function planningPrompt(ticket: Ticket, baseBranch: string): string {
 export function builderPrompt(
   ticket: Ticket,
   plan: string,
-  feedback?: { testOutput?: string; review?: string; feedback?: string },
+  feedback?: {
+    testOutput?: string;
+    review?: string;
+    feedback?: string;
+  },
+  hints?: { setup?: string | null; test?: string | null },
 ): string {
   const sections = [
     "Implement the following ticket in the current git worktree.",
@@ -29,9 +34,15 @@ export function builderPrompt(
     "",
     "Rules: implement the smallest complete change, follow the repository conventions,",
     "add or update tests, and leave the changes uncommitted. Do not run git commit or git push.",
+    "Set up the project, build it, run its tests, and fix any setup/build/test failure",
+    "you find using the project's native tooling.",
     "Your final message must be the implementation report.",
   ];
-
+  if (hints?.setup || hints?.test) {
+    sections.push("", "Configured command hints (verify them before using):");
+    if (hints.setup) sections.push(`- setup: ${hints.setup}`);
+    if (hints.test) sections.push(`- test: ${hints.test}`);
+  }
   if (feedback?.testOutput) {
     sections.push(
       "",
@@ -70,8 +81,7 @@ export function qaPrompt(
   plan: string,
   buildReport: string,
   testCommand: string | null,
-): string {
-  return [
+): string {  return [
     "Verify the implementation of the following ticket.",
     "",
     ticketPrompt(ticket),
@@ -145,6 +155,30 @@ export function reviewPrompt(
     "Inspect the diff with read-only git commands and read the affected files.",
     "Do not modify anything. Start your final answer with VERDICT: PASS or VERDICT: FAIL.",
   ].join("\n");
+}
+
+export function verificationPrompt(input: {
+  ticket: Ticket;
+  testHint: string | null;
+}): string {
+  return [
+    "You are the verification gate for this worktree. Do not modify any file.",
+    "",
+    `Ticket: ${input.ticket.ref} — ${input.ticket.title}`,
+    input.testHint ? `Optional hint from the run configuration: \`${input.testHint}\`` : "",
+    "",
+    "Inspect the repository and decide how this change should be verified. Run the",
+    "checks the project itself uses (tests, build, lint, or an equivalent), capture",
+    "the commands, exit codes and relevant output.",
+    "If the project has no automated checks, report skipped=true.",
+    "",
+    "Return ONLY a fenced JSON block:",
+    "```json",
+    '{"skipped":false,"passed":true,"exitCode":0,"timedOut":false,"command":"<command you ran>","durationMs":1234,"output":"..."}',
+    "```",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function pullRequestBody(input: {

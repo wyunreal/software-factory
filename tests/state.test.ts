@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { canTransition, isActive, isTerminal } from "../src/domain/state.ts";
 
 describe("run state machine", () => {

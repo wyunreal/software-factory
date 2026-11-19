@@ -130,9 +130,11 @@ Pull requests are rejected as tickets.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `GITHUB_TOKEN` | — (required) | PAT with Issues, Contents, Pull requests |
-| `FACTORY_TEST_CMD` | empty | fallback test command |
-| `FACTORY_SETUP_CMD` | empty | fallback setup command |
+| `FACTORY_TEST_CMD` | empty | test command hint for the Builder/Verifier |
+| `FACTORY_SETUP_CMD` | empty | setup command hint for the Builder |
 | `FACTORY_MAX_REWORK` | `3` | maximum correction cycles |
+| `FACTORY_POLL_INTERVAL_MS` | `15000` | PR activity scan interval |
+| `FACTORY_WORKER_INTERVAL_MS` | `5000` | job worker polling interval |
 | `FACTORY_DELIVERY_MODE` | `github` | `github` or `local` |
 | `FACTORY_AUTO_MERGE` | `false` | merge after APPROVED |
 | `FACTORY_MERGE_METHOD` | `squash` | `merge`, `squash`, `rebase` |

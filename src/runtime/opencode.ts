@@ -3,7 +3,7 @@ import type { AgentRunResult, ModelRef } from "../domain/types.ts";
 import type { OpencodeConfig } from "../config.ts";
 import { AgentTimeoutError, ExternalServiceError } from "../errors.ts";
 import type { Logger } from "../logger.ts";
-import { truncate } from "../util.ts";
+import { sleep, truncate } from "../util.ts";
 
 type SessionInfo = {
   id: string;
@@ -201,7 +201,7 @@ export class OpencodeRuntime implements AgentRuntimePort {
           };
         }
 
-        await Bun.sleep(400);
+        await sleep(400);
       }
     } catch (error) {
       if (!completed) await this.interrupt(sessionId);

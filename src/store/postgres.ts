@@ -1,9 +1,14 @@
-import { SQL } from "bun";
+import { readFile } from "node:fs/promises";
+import { Pool } from "pg";
 import type { RunStore, RunPatch, CreateRunOptions } from "../ports.ts";
 import type {
   Artifact,
+  EnqueueJobInput,
   Run,
   RunEvent,
+  RunJob,
+  RunJobKind,
+  RunJobStatus,
   RunState,
   Ticket,
 } from "../domain/types.ts";
@@ -14,25 +19,26 @@ import type { Logger } from "../logger.ts";
 type Row = Record<string, unknown>;
 
 export class PostgresRunStore implements RunStore {
-  private readonly sql: SQL;
+  private readonly pool: Pool;
 
   constructor(
     databaseUrl: string,
     private readonly logger: Logger,
   ) {
-    this.sql = new SQL({ url: databaseUrl, max: 10 });
+    this.pool = new Pool({ connectionString: databaseUrl, max: 10 });
   }
 
   async migrate(): Promise<void> {
-    const schema = await Bun.file(
+    const schema = await readFile(
       new URL("./schema.sql", import.meta.url),
-    ).text();
-    await this.sql.unsafe(schema);
+      "utf8",
+    );
+    await this.pool.query(schema);
     this.logger.info("database schema ready");
   }
 
   async close(): Promise<void> {
-    await this.sql.close();
+    await this.pool.end();
   }
 
   async createRun(
@@ -40,53 +46,67 @@ export class PostgresRunStore implements RunStore {
     options: CreateRunOptions,
   ): Promise<Run | null> {
     const id = crypto.randomUUID();
-    const rows = await this.sql`
-      INSERT INTO runs (
+    const { rows } = await this.pool.query<Row>(
+      `INSERT INTO runs (
         id, ticket_card_id, ticket_ref, ticket_title, ticket_description,
         ticket_url, ticket_labels, ticket_criteria, state,
         repo_url, base_branch, setup_command, test_command
       ) VALUES (
-        ${id}, ${ticket.cardId}, ${ticket.ref}, ${ticket.title},
-        ${ticket.description}, ${ticket.url},
-        ${JSON.stringify(ticket.labels)}::jsonb,
-        ${JSON.stringify(ticket.acceptanceCriteria)}::jsonb,
-        'CLAIMED',
-        ${options.repoUrl}, ${options.baseBranch},
-        ${options.setupCommand ?? null}, ${options.testCommand ?? null}
+        $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, 'CLAIMED',
+        $9, $10, $11, $12
       )
       ON CONFLICT DO NOTHING
-      RETURNING *
-    `;
+      RETURNING *`,
+      [
+        id,
+        ticket.cardId,
+        ticket.ref,
+        ticket.title,
+        ticket.description,
+        ticket.url,
+        JSON.stringify(ticket.labels),
+        JSON.stringify(ticket.acceptanceCriteria),
+        options.repoUrl,
+        options.baseBranch,
+        options.setupCommand ?? null,
+        options.testCommand ?? null,
+      ],
+    );
     const row = rows[0];
     return row ? mapRun(row) : null;
   }
 
   async getRun(id: string): Promise<Run | null> {
-    const rows = await this.sql`SELECT * FROM runs WHERE id = ${id}`;
+    const { rows } = await this.pool.query<Row>(
+      "SELECT * FROM runs WHERE id = $1",
+      [id],
+    );
     return rows[0] ? mapRun(rows[0]) : null;
   }
 
   async listRuns(limit: number): Promise<Run[]> {
-    const rows = await this.sql`
-      SELECT * FROM runs ORDER BY created_at DESC LIMIT ${limit}
-    `;
+    const { rows } = await this.pool.query<Row>(
+      "SELECT * FROM runs ORDER BY created_at DESC LIMIT $1",
+      [limit],
+    );
     return rows.map(mapRun);
   }
 
   async listRunsByState(state: RunState): Promise<Run[]> {
-    const rows = await this.sql`
-      SELECT * FROM runs WHERE state = ${state} ORDER BY created_at ASC
-    `;
+    const { rows } = await this.pool.query<Row>(
+      "SELECT * FROM runs WHERE state = $1 ORDER BY created_at ASC",
+      [state],
+    );
     return rows.map(mapRun);
   }
 
   async claimNext(): Promise<Run | null> {
-    const rows = await this.sql`
-      SELECT * FROM runs
-      WHERE finished_at IS NULL AND state NOT IN ('DONE', 'BLOCKED')
-      ORDER BY created_at ASC
-      LIMIT 1
-    `;
+    const { rows } = await this.pool.query<Row>(
+      `SELECT * FROM runs
+       WHERE finished_at IS NULL AND state NOT IN ('DONE', 'BLOCKED')
+       ORDER BY created_at ASC
+       LIMIT 1`,
+    );
     return rows[0] ? mapRun(rows[0]) : null;
   }
 
@@ -107,47 +127,55 @@ export class PostgresRunStore implements RunStore {
       metadata?: unknown;
     },
   ): Promise<Artifact> {
-    const rows = await this.sql`
-      INSERT INTO artifacts (run_id, name, agent, content, metadata)
-      VALUES (
-        ${runId}, ${artifact.name}, ${artifact.agent}, ${artifact.content},
-        ${JSON.stringify(artifact.metadata ?? {})}::jsonb
-      )
-      RETURNING *
-    `;
+    const { rows } = await this.pool.query<Row>(
+      `INSERT INTO artifacts (run_id, name, agent, content, metadata)
+       VALUES ($1, $2, $3, $4, $5::jsonb)
+       RETURNING *`,
+      [
+        runId,
+        artifact.name,
+        artifact.agent,
+        artifact.content,
+        JSON.stringify(artifact.metadata ?? {}),
+      ],
+    );
     const row = rows[0];
     if (!row) throw new Error("Failed to insert artifact");
     return mapArtifact(row);
   }
 
   async listArtifacts(runId: string): Promise<Artifact[]> {
-    const rows = await this.sql`
-      SELECT * FROM artifacts WHERE run_id = ${runId} ORDER BY created_at ASC, id ASC
-    `;
+    const { rows } = await this.pool.query<Row>(
+      "SELECT * FROM artifacts WHERE run_id = $1 ORDER BY created_at ASC, id ASC",
+      [runId],
+    );
     return rows.map(mapArtifact);
   }
 
   async latestArtifact(runId: string, name: string): Promise<Artifact | null> {
-    const rows = await this.sql`
-      SELECT * FROM artifacts
-      WHERE run_id = ${runId} AND name = ${name}
-      ORDER BY created_at DESC, id DESC
-      LIMIT 1
-    `;
+    const { rows } = await this.pool.query<Row>(
+      `SELECT * FROM artifacts
+       WHERE run_id = $1 AND name = $2
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [runId, name],
+    );
     return rows[0] ? mapArtifact(rows[0]) : null;
   }
 
   async addEvent(runId: string, type: string, data: unknown = {}): Promise<void> {
-    await this.sql`
-      INSERT INTO run_events (run_id, type, data)
-      VALUES (${runId}, ${type}, ${JSON.stringify(data ?? {})}::jsonb)
-    `;
+    await this.pool.query(
+      `INSERT INTO run_events (run_id, type, data)
+       VALUES ($1, $2, $3::jsonb)`,
+      [runId, type, JSON.stringify(data ?? {})],
+    );
   }
 
   async listEvents(runId: string): Promise<RunEvent[]> {
-    const rows = (await this.sql`
-      SELECT * FROM run_events WHERE run_id = ${runId} ORDER BY id ASC
-    `) as Row[];
+    const { rows } = await this.pool.query<Row>(
+      "SELECT * FROM run_events WHERE run_id = $1 ORDER BY id ASC",
+      [runId],
+    );
     return rows.map((row) => ({
       id: Number(row.id),
       runId: String(row.run_id),
@@ -161,11 +189,12 @@ export class PostgresRunStore implements RunStore {
     runId: string,
     feedbackId: string,
   ): Promise<boolean> {
-    const rows = await this.sql`
-      SELECT 1 FROM processed_feedback
-      WHERE run_id = ${runId} AND feedback_id = ${feedbackId}
-      LIMIT 1
-    `;
+    const { rows } = await this.pool.query(
+      `SELECT 1 FROM processed_feedback
+       WHERE run_id = $1 AND feedback_id = $2
+       LIMIT 1`,
+      [runId, feedbackId],
+    );
     return rows.length > 0;
   }
 
@@ -174,11 +203,88 @@ export class PostgresRunStore implements RunStore {
     feedbackId: string,
     kind: string,
   ): Promise<void> {
-    await this.sql`
-      INSERT INTO processed_feedback (run_id, feedback_id, kind)
-      VALUES (${runId}, ${feedbackId}, ${kind})
-      ON CONFLICT DO NOTHING
-    `;
+    await this.pool.query(
+      `INSERT INTO processed_feedback (run_id, feedback_id, kind)
+       VALUES ($1, $2, $3)
+       ON CONFLICT DO NOTHING`,
+      [runId, feedbackId, kind],
+    );
+  }
+
+  async enqueueJob(input: EnqueueJobInput): Promise<RunJob | null> {
+    const { rows } = await this.pool.query<Row>(
+      `INSERT INTO run_jobs (
+         id, kind, run_id, repo, issue_number, pr_number, dedup_key, payload
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+       ON CONFLICT (dedup_key) DO NOTHING
+       RETURNING *`,
+      [
+        crypto.randomUUID(),
+        input.kind,
+        input.runId,
+        input.repo,
+        input.issueNumber ?? null,
+        input.prNumber ?? null,
+        input.dedupKey,
+        JSON.stringify(input.payload ?? {}),
+      ],
+    );
+    return rows[0] ? mapJob(rows[0]) : null;
+  }
+
+  async claimNextJob(): Promise<RunJob | null> {
+    const { rows } = await this.pool.query<Row>(
+      `UPDATE run_jobs
+       SET status = 'running', claimed_at = now(), attempts = attempts + 1
+       WHERE id = (
+         SELECT id FROM run_jobs
+         WHERE status = 'pending' AND available_at <= now()
+         ORDER BY created_at ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT 1
+       )
+       RETURNING *`,
+    );
+    return rows[0] ? mapJob(rows[0]) : null;
+  }
+
+  async completeJob(id: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE run_jobs
+       SET status = 'done', finished_at = now(), last_error = NULL
+       WHERE id = $1`,
+      [id],
+    );
+  }
+
+  async retryJob(id: string, error: string, delayMs: number): Promise<void> {
+    await this.pool.query(
+      `UPDATE run_jobs
+       SET status = 'pending',
+           last_error = $2,
+           claimed_at = NULL,
+           available_at = now() + ($3::numeric / 1000) * interval '1 second'
+       WHERE id = $1`,
+      [id, error, delayMs],
+    );
+  }
+
+  async failJob(id: string, error: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE run_jobs
+       SET status = 'failed', last_error = $2, finished_at = now()
+       WHERE id = $1`,
+      [id, error],
+    );
+  }
+
+  async resetRunningJobs(): Promise<number> {
+    const { rowCount } = await this.pool.query(
+      `UPDATE run_jobs
+       SET status = 'pending', claimed_at = NULL, available_at = now()
+       WHERE status = 'running'`,
+    );
+    return rowCount ?? 0;
   }
 
   private async update(id: string, patch: RunPatch): Promise<Run> {
@@ -213,12 +319,12 @@ export class PostgresRunStore implements RunStore {
     const assignments = columns.map(
       (column, index) => `${column} = $${index + 1}`,
     );
-    const rows = await this.sql.unsafe(
+    const { rows } = await this.pool.query<Row>(
       `UPDATE runs SET ${assignments.join(", ")}, updated_at = now()
        WHERE id = $${values.length} RETURNING *`,
       values,
     );
-    const row = rows[0] as Row | undefined;
+    const row = rows[0];
     if (!row) throw new Error(`Run not found after update: ${id}`);
     return mapRun(row);
   }
@@ -255,6 +361,26 @@ function mapRun(row: Row): Run {
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
     finishedAt: row.finished_at ? iso(row.finished_at) : null,
+  };
+}
+
+function mapJob(row: Row): RunJob {
+  return {
+    id: String(row.id),
+    kind: String(row.kind) as RunJobKind,
+    runId: String(row.run_id),
+    repo: String(row.repo),
+    issueNumber: row.issue_number === null ? null : Number(row.issue_number),
+    prNumber: row.pr_number === null ? null : Number(row.pr_number),
+    dedupKey: String(row.dedup_key),
+    payload: parseJson(row.payload),
+    status: String(row.status) as RunJobStatus,
+    attempts: Number(row.attempts ?? 0),
+    availableAt: iso(row.available_at),
+    createdAt: iso(row.created_at),
+    claimedAt: row.claimed_at ? iso(row.claimed_at) : null,
+    finishedAt: row.finished_at ? iso(row.finished_at) : null,
+    lastError: nullableString(row.last_error),
   };
 }
 

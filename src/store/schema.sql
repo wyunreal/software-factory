@@ -64,3 +64,24 @@ CREATE TABLE IF NOT EXISTS processed_feedback (
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (run_id, feedback_id)
 );
+
+CREATE TABLE IF NOT EXISTS run_jobs (
+  id text PRIMARY KEY,
+  kind text NOT NULL,
+  run_id text NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  repo text NOT NULL,
+  issue_number integer,
+  pr_number integer,
+  dedup_key text NOT NULL UNIQUE,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status text NOT NULL DEFAULT 'pending',
+  attempts integer NOT NULL DEFAULT 0,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  claimed_at timestamptz,
+  finished_at timestamptz,
+  last_error text
+);
+
+CREATE INDEX IF NOT EXISTS run_jobs_pending_idx
+  ON run_jobs (status, available_at, created_at);
