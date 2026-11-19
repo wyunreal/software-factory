@@ -39,7 +39,6 @@ function makeConfig(dataDir: string): FactoryConfig {
     },
     github: {
       token: "token",
-      repository: "",
       apiUrl: "https://api.github.com",
       draft: false,
       labels: {
@@ -49,11 +48,8 @@ function makeConfig(dataDir: string): FactoryConfig {
         ready: null,
         skip: ["factory:skip"],
       },
-      allowedRepos: [],
     },
     git: {
-      repoUrl: "",
-      baseBranch: "main",
       authorName: "Factory",
       authorEmail: "factory@example.com",
       token: null,

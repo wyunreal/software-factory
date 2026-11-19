@@ -86,11 +86,11 @@ export class GitWorkspace implements WorkspacePort {
     setupCommand: string | null;
     testCommand: string | null;
   }> {
-    const repoUrl = run.repoUrl || this.config.git.repoUrl;
+    const repoUrl = run.repoUrl;
     if (!repoUrl) {
       throw new BlockedError("Run has no repository URL");
     }
-    const baseBranch = run.baseBranch || this.config.git.baseBranch;
+    const baseBranch = run.baseBranch;
     const repoDir = await this.ensureRepository(repoUrl);
     const repoConfig = await this.readFactoryConfig(repoDir, baseBranch);
     const setupCommand =

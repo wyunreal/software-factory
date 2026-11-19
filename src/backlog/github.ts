@@ -26,17 +26,9 @@ export class GitHubIssuesBacklog implements BacklogPort {
   ) {}
 
   async validate(): Promise<void> {
-    if (!this.config.repository) {
-      this.logger.info("GitHub Issues polling disabled (no GITHUB_REPOSITORY); use the webapp/API to start runs");
-      return;
-    }
-    const repo = await this.request<{ full_name: string; open_issues_count?: number }>(
-      this.repoPath(this.config.repository),
-    );
-    await this.ensureLabelsForRepo(this.config.repository);
-    this.logger.info("GitHub Issues backlog validated", {
-      repository: repo.full_name,
-      labels: this.config.labels,
+    const user = await this.request<{ login?: string }>("/user");
+    this.logger.info("GitHub credentials validated", {
+      user: user.login ?? "(unknown)",
     });
   }
 
@@ -66,38 +58,6 @@ export class GitHubIssuesBacklog implements BacklogPort {
       throw new Error(`Issue #${number} is closed`);
     }
     return this.toTicket(issue, repo);
-  }
-
-  async fetchReadyTickets(): Promise<Ticket[]> {
-    if (!this.config.repository) return [];
-    const issues = await this.listOpenIssues(this.config.repository);
-    const stateLabels = new Set([
-      this.config.labels.inProgress,
-      this.config.labels.inReview,
-      this.config.labels.blocked,
-    ]);
-    const skipLabels = new Set(
-      this.config.labels.skip.map((label) => label.toLowerCase()),
-    );
-
-    const tickets: Ticket[] = [];
-    for (const issue of issues) {
-      if (issue.pull_request) continue;
-      const labelNames = issue.labels
-        .map((label) => (typeof label === "string" ? label : label.name))
-        .filter(Boolean);
-      const lowerLabels = labelNames.map((label) => label.toLowerCase());
-
-      if (lowerLabels.some((label) => skipLabels.has(label))) continue;
-      if (this.config.labels.ready && !labelNames.includes(this.config.labels.ready)) {
-        continue;
-      }
-      if (labelNames.some((label) => stateLabels.has(label))) continue;
-
-      tickets.push(this.toTicket(issue, this.config.repository));
-    }
-
-    return tickets;
   }
 
   async claim(ticket: Ticket, run: Run): Promise<void> {
@@ -153,28 +113,6 @@ export class GitHubIssuesBacklog implements BacklogPort {
     return issue.state === "closed";
   }
 
-  private async listOpenIssues(repo: string): Promise<GitHubIssue[]> {
-    const issues: GitHubIssue[] = [];
-    for (let page = 1; page <= 5; page++) {
-      const params = new URLSearchParams({
-        state: "open",
-        per_page: "100",
-        page: String(page),
-        sort: "created",
-        direction: "asc",
-      });
-      if (this.config.labels.ready) {
-        params.set("labels", this.config.labels.ready);
-      }
-      const batch = await this.request<GitHubIssue[]>(
-        `${this.repoPath(repo)}/issues?${params}`,
-      );
-      issues.push(...batch);
-      if (batch.length < 100) break;
-    }
-    return issues;
-  }
-
   private toTicket(issue: GitHubIssue, repo: string): Ticket {
     const description = issue.body ?? "";
     return {
@@ -203,7 +141,10 @@ export class GitHubIssuesBacklog implements BacklogPort {
   private issuePath(ticket: Ticket): string {
     const fromRef = /^GH-(\d+)$/i.exec(ticket.ref)?.[1];
     const number = ticket.number ?? (fromRef ? Number(fromRef) : NaN);
-    const repo = ticket.repo ?? this.config.repository;
+    const repo = ticket.repo;
+    if (!repo) {
+      throw new Error(`Ticket ${ticket.ref} has no GitHub repository`);
+    }
     if (!Number.isInteger(number) || number <= 0) {
       throw new Error(`Invalid GitHub issue number for ticket ${ticket.ref}`);
     }

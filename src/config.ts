@@ -19,16 +19,12 @@ export type GithubLabels = {
 
 export type GithubConfig = {
   token: string;
-  repository: string;
   apiUrl: string;
   draft: boolean;
   labels: GithubLabels;
-  allowedRepos: string[];
 };
 
 export type GitConfig = {
-  repoUrl: string;
-  baseBranch: string;
   authorName: string;
   authorEmail: string;
   token: string | null;
@@ -158,7 +154,6 @@ export function loadConfig(
 ): FactoryConfig {
   const problems: string[] = [];
 
-  const repoUrlInput = optional(env, "FACTORY_REPO_URL") ?? "";
   const deliveryMode = (env.FACTORY_DELIVERY_MODE?.trim() || "github") as
     | "github"
     | "local";
@@ -176,12 +171,6 @@ export function loadConfig(
   }
 
   const githubToken = required(env, "GITHUB_TOKEN", problems);
-  const explicitRepo = optional(env, "GITHUB_REPOSITORY");
-  const inferredRepo = repositoryFromUrl(repoUrlInput);
-  const githubRepository = explicitRepo ?? inferredRepo ?? "";
-  const repoUrl =
-    repoUrlInput ||
-    (githubRepository ? `https://github.com/${githubRepository}.git` : "");
 
   let model: ModelRef | null = null;
   try {
@@ -233,7 +222,6 @@ export function loadConfig(
     },
     github: {
       token: githubToken,
-      repository: githubRepository,
       apiUrl: (optional(env, "GITHUB_API_URL") ?? "https://api.github.com").replace(
         /\/+$/,
         "",
@@ -247,11 +235,8 @@ export function loadConfig(
         ready: optional(env, "FACTORY_LABEL_READY"),
         skip: envList(env, "FACTORY_SKIP_LABELS", "factory:skip"),
       },
-      allowedRepos: envList(env, "FACTORY_ALLOWED_REPOS", ""),
     },
     git: {
-      repoUrl,
-      baseBranch: optional(env, "FACTORY_BASE_BRANCH") ?? "main",
       authorName: optional(env, "FACTORY_GIT_AUTHOR_NAME") ?? "Software Factory",
       authorEmail:
         optional(env, "FACTORY_GIT_AUTHOR_EMAIL") ?? "factory@localhost",

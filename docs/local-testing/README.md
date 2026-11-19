@@ -35,9 +35,7 @@ docker compose exec factory bun run scripts/opencode-check.ts
 Paths must be under `/config` and `/data`. `opencode-check` prints the URL and
 fails if `FACTORY_OPENCODE_URL` is missing instead of assuming `127.0.0.1:4096`.
 
-## 4. Validate GitHub (optional)
-
-Only needed for automatic polling:
+## 4. Validate GitHub
 
 ```bash
 docker compose exec factory bun run scripts/github-check.ts
@@ -101,7 +99,7 @@ docker compose up -d --force-recreate factory
 The PR appears in the issue's repo with the plan, builder report, QA, tests,
 review, `Closes #<issue>`, and a `factory/<ticket>-<run>` branch.
 
-Merge closes the issue; the factory marks the run `DONE` on the next poll.
+Merge closes the issue; the factory marks the run `DONE` on the next sync.
 
 ## 7. Host development
 
@@ -144,7 +142,7 @@ volume. It does not touch your local OpenCode.
 | `Repository mismatch` | issue and repo differ | use the issue's repo |
 | `Issue #N is closed` | issue closed | use an open issue |
 | Webapp 502 | factory down | `docker compose ps`; check logs |
-| Issue not polled | state label, `factory:skip`, no default repo | check labels and `/api/runs` |
+| Issue not processed | state label or `factory:skip` | check labels and `/api/runs` |
 | `Setup command failed` | missing toolchain | extend `Dockerfile` or fix setup command |
 | Tests always red | missing deps/command | test inside `docker compose exec factory sh -lc '<cmd>'` |
 | `Builder produced no changes` | agent changed nothing | inspect `build` artifact |

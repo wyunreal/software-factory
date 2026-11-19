@@ -19,7 +19,7 @@ flowchart LR
 
 ## What it does
 
-- Starts a run from a webapp with **repo + issue URL**, or polls a default repo.
+- Starts a run from a webapp with **repo + issue URL**.
 - Planner → Builder → QA → deterministic tests → Reviewer.
 - Isolated git worktree and `factory/<ticket>-<run>` branch per run.
 - Same-PR rework on `CHANGES_REQUESTED`; PR comments are triaged before any

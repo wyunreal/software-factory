@@ -20,25 +20,19 @@ import {
 import { nowIso, truncate } from "./util.ts";
 
 export type OrchestratorStats = {
-  polls: number;
-  ticketsDiscovered: number;
-  runsStarted: number;
   runsCompleted: number;
   errors: number;
 };
 
 export class Orchestrator {
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private syncTimer: ReturnType<typeof setInterval> | null = null;
   private workerTimer: ReturnType<typeof setInterval> | null = null;
-  private polling = false;
+  private syncing = false;
   private working = false;
   private stopped = false;
-  private lastPollAt: string | null = null;
+  private lastSyncAt: string | null = null;
   private readonly startedAt = nowIso();
   private readonly stats: OrchestratorStats = {
-    polls: 0,
-    ticketsDiscovered: 0,
-    runsStarted: 0,
     runsCompleted: 0,
     errors: 0,
   };
@@ -55,102 +49,49 @@ export class Orchestrator {
 
   start(): void {
     this.stopped = false;
-    this.pollTimer = setInterval(() => {
-      void this.pollNow();
+    this.syncTimer = setInterval(() => {
+      void this.syncNow();
     }, this.config.pollIntervalMs);
     this.workerTimer = setInterval(() => {
       void this.workOnce();
     }, this.config.workerIntervalMs);
-    this.pollTimer.unref?.();
+    this.syncTimer.unref?.();
     this.workerTimer.unref?.();
-    void this.pollNow().then(() => this.workOnce());
+    void this.syncNow().then(() => this.workOnce());
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.syncTimer) clearInterval(this.syncTimer);
     if (this.workerTimer) clearInterval(this.workerTimer);
-    this.pollTimer = null;
+    this.syncTimer = null;
     this.workerTimer = null;
   }
 
   status(): Record<string, unknown> {
     return {
       startedAt: this.startedAt,
-      lastPollAt: this.lastPollAt,
-      polling: this.polling,
+      lastSyncAt: this.lastSyncAt,
+      syncing: this.syncing,
       working: this.working,
       stats: this.stats,
     };
   }
 
-  async pollNow(): Promise<{ discovered: number; claimed: number }> {
-    if (this.polling || this.stopped) return { discovered: 0, claimed: 0 };
-    this.polling = true;
-    let discovered = 0;
-    let claimed = 0;
-
+  async syncNow(): Promise<void> {
+    if (this.syncing || this.stopped) return;
+    this.syncing = true;
     try {
-      const tickets = await this.backlog.fetchReadyTickets();
-      discovered = tickets.length;
-      this.stats.polls += 1;
-      this.stats.ticketsDiscovered += tickets.length;
-      this.lastPollAt = nowIso();
-
-      for (const ticket of tickets) {
-        const repoUrl = ticket.repoUrl ?? this.config.git.repoUrl;
-        if (!repoUrl) {
-          this.logger.warn("ticket has no repository URL", {
-            ticket: ticket.ref,
-          });
-          continue;
-        }
-        const run = await this.store.createRun(ticket, {
-          repoUrl,
-          baseBranch: this.config.git.baseBranch,
-        });
-        if (!run) continue;
-        try {
-          await this.backlog.claim(ticket, run);
-          await this.store.addEvent(run.id, "backlog.claimed", {
-            cardId: ticket.cardId,
-            ref: ticket.ref,
-          });
-          claimed += 1;
-          this.stats.runsStarted += 1;
-          this.logger.info("ticket claimed", {
-            run: run.id,
-            ticket: ticket.ref,
-            title: ticket.title,
-          });
-        } catch (error) {
-          this.stats.errors += 1;
-          const message = truncate(
-            error instanceof Error ? error.message : String(error),
-            2_000,
-          );
-          this.logger.error("failed to claim ticket", {
-            ticket: ticket.ref,
-            error: message,
-          });
-          await this.store.transition(run.id, "BLOCKED", {
-            blockReason: `Could not claim issue in GitHub: ${message}`,
-            finishedAt: nowIso(),
-          });
-        }
-      }
-
+      this.lastSyncAt = nowIso();
       await this.syncDeliveredRuns();
     } catch (error) {
       this.stats.errors += 1;
-      this.logger.error("backlog poll failed", {
+      this.logger.error("delivered-run sync failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      this.polling = false;
+      this.syncing = false;
     }
-
-    return { discovered, claimed };
   }
 
   async workOnce(): Promise<void> {

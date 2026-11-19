@@ -14,7 +14,7 @@ Included:
 
 - A dedicated orchestrator (Bun + TypeScript), separate from the agent runtime.
 - PostgreSQL for runs, artifacts, and events.
-- GitHub Issues connector: webapp/API with repo + issue URL, optional polling,
+- GitHub Issues connector: webapp/API with repo + issue URL,
   claim, labels, comments, and closure.
 - OpenCode Server as the runtime; one agent profile per role.
 - Planner, Builder, QA, and Reviewer with distinct permissions.
@@ -66,7 +66,7 @@ delivered as a single PR.
 
 Planned work:
 
-- GitHub webhooks in addition to polling.
+- GitHub webhooks for real-time events.
 - Recovery of interrupted runs from the last completed step.
 - Retries with backoff and automatic blocking after repeated failures.
 - Per-ticket budget (tokens/cost) and automatic cutoff.

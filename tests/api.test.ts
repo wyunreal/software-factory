@@ -7,7 +7,7 @@ import { Logger } from "../src/logger.ts";
 import type { Orchestrator } from "../src/orchestrator.ts";
 import type { Ticket } from "../src/domain/types.ts";
 
-function makeConfig(port: number, allowedRepos: string[] = []): FactoryConfig {
+function makeConfig(port: number): FactoryConfig {
   return {
     port,
     apiToken: null,
@@ -36,7 +36,6 @@ function makeConfig(port: number, allowedRepos: string[] = []): FactoryConfig {
     },
     github: {
       token: "token",
-      repository: "",
       apiUrl: "https://api.github.com",
       draft: false,
       labels: {
@@ -46,11 +45,8 @@ function makeConfig(port: number, allowedRepos: string[] = []): FactoryConfig {
         ready: null,
         skip: ["factory:skip"],
       },
-      allowedRepos,
     },
     git: {
-      repoUrl: "",
-      baseBranch: "main",
       authorName: "Factory",
       authorEmail: "factory@example.com",
       token: "token",
@@ -73,7 +69,7 @@ function makeTicket(): Ticket {
   };
 }
 
-function setup(port: number, allowedRepos: string[] = []) {
+function setup(port: number) {
   const store = new MemoryRunStore();
   const backlog = {
     getTicket: async () => makeTicket(),
@@ -82,12 +78,11 @@ function setup(port: number, allowedRepos: string[] = []) {
   const orchestrator = {
     workOnce: async () => undefined,
     status: () => ({}),
-    pollNow: async () => ({ discovered: 0, claimed: 0 }),
-  } as unknown as Orchestrator;
+    syncNow: async () => undefined,  } as unknown as Orchestrator;
   const runtime = { health: async () => undefined } as unknown as ApiDependencies["runtime"];
 
   const server = startApi({
-    config: makeConfig(port, allowedRepos),
+    config: makeConfig(port),
     store,
     orchestrator,
     runtime,
@@ -137,26 +132,6 @@ describe("POST /api/runs", () => {
       expect(response.status).toBe(400);
       const body = (await response.json()) as { error: string };
       expect(body.error).toContain("mismatch");
-    } finally {
-      server.stop(true);
-    }
-  });
-
-  test("enforces the repository allowlist", async () => {
-    const port = 19950 + Math.floor(Math.random() * 40);
-    const { server } = setup(port, ["someone/else"]);
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/runs`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          repoUrl: "https://github.com/acme/app",
-          issueUrl: "https://github.com/acme/app/issues/7",
-        }),
-      });
-      expect(response.status).toBe(400);
-      const body = (await response.json()) as { error: string };
-      expect(body.error).toContain("FACTORY_ALLOWED_REPOS");
     } finally {
       server.stop(true);
     }

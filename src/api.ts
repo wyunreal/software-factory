@@ -69,10 +69,8 @@ export function startApi(deps: ApiDependencies): ReturnType<typeof Bun.serve> {
       if (request.method === "POST" && url.pathname === "/api/runs") {
         try {
           const body = (await request.json()) as StartRunBody;
-          const target = parseTarget(body.repoUrl, body.issueUrl, deps.config);
-          const baseBranch = parseBranch(
-            body.baseBranch ?? deps.config.git.baseBranch,
-          );
+          const target = parseTarget(body.repoUrl, body.issueUrl);
+          const baseBranch = parseBranch(body.baseBranch ?? "main");
 
           const ticket = await deps.backlog.getTicket(
             target.repository,
@@ -143,7 +141,7 @@ export function startApi(deps: ApiDependencies): ReturnType<typeof Bun.serve> {
 
       if (request.method === "POST" && url.pathname === "/api/tick") {
         void deps.orchestrator
-          .pollNow()
+          .syncNow()
           .then(() => deps.orchestrator.workOnce())
           .catch((error: unknown) => {
             log.warn("manual tick failed", {
@@ -175,7 +173,6 @@ type RunTarget = {
 function parseTarget(
   repoUrlInput: string | undefined,
   issueUrlInput: string | undefined,
-  config: FactoryConfig,
 ): RunTarget {
   if (!issueUrlInput?.trim()) {
     throw new Error("issueUrl is required");
@@ -192,13 +189,6 @@ function parseTarget(
   if (repository.toLowerCase() !== issue.repository.toLowerCase()) {
     throw new Error(
       `Repository mismatch: the issue is in ${issue.repository}, but repoUrl points to ${repository}`,
-    );
-  }
-
-  const allowed = config.github.allowedRepos.map((repo) => repo.toLowerCase());
-  if (allowed.length > 0 && !allowed.includes(repository.toLowerCase())) {
-    throw new Error(
-      `Repository ${repository} is not in FACTORY_ALLOWED_REPOS`,
     );
   }
 

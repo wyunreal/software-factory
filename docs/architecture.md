@@ -17,7 +17,6 @@ flowchart LR
 ```
 
 The repo and issue arrive at runtime from the webapp or `POST /api/runs`.
-Automatic polling of a default repo is optional.
 
 ## Components
 
@@ -26,7 +25,7 @@ Automatic polling of a default repo is optional.
 | `src/index.ts` | bootstrap, configuration validation, shutdown |
 | `src/api.ts` | HTTP API, including `POST /api/runs` (repo + issue URL) |
 | `web/` | webapp to start runs and inspect their state |
-| `src/orchestrator.ts` | optional polling, claim, single worker, `Done` sync |
+| `src/orchestrator.ts` | single worker, delivered-run sync (`Done`, reviews) |
 | `src/workflow.ts` | ticket pipeline and state transitions |
 | `src/backlog/github.ts` | GitHub Issues connector (`BacklogPort`) |
 | `src/runtime/opencode.ts` | OpenCode Server client (`AgentRuntimePort`) |
@@ -85,8 +84,8 @@ Invariants:
 - `HUMAN_REVIEW`, `DONE`, and `BLOCKED` are terminal for automation;
   `HUMAN_REVIEW` can be reactivated by a `CHANGES_REQUESTED` review (straight to
   `REWORK`) or by comments that go through `TRIAGING`.
-- `BLOCKED` requires human intervention; moving the issue back to Ready or
-  reopening it creates a new run (the unique index only covers runs with
+- `BLOCKED` requires human intervention; starting a new run for the same open
+  issue creates a fresh run (the unique index only covers runs with
   `finished_at IS NULL`).
 
 ## Isolation with git worktrees
@@ -148,9 +147,8 @@ processing of the same run (leases) is left for Phase 2.
 - The GitHub token is used in memory for git and the API; it is not written to
   `.git/config`.
 - The container only mounts the data volume and the agents; not the host home.
-- The target repo is resolved per run from the webapp/API. Use
-  `FACTORY_ALLOWED_REPOS` to restrict it; without an allowlist, any repo the token
-  can reach may be cloned.
+- The target repo is resolved per run from the webapp/API; the GitHub token's
+  permissions decide what can be cloned and pushed.
 - `.factory.yml` is executed from the target repo: treat it as trusted code and
   do not point the factory at untrusted repos.
 

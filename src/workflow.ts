@@ -126,7 +126,7 @@ export class Workflow {
     const result = await this.runAgent(
       run,
       AGENTS.planner,
-      planningPrompt(run.ticket, this.deps.config.git.baseBranch),
+      planningPrompt(run.ticket, run.baseBranch),
       "Plan the ticket. Do not modify the working tree.",
     );
     if (!result.text.trim()) {
@@ -473,7 +473,7 @@ export class Workflow {
       const pr = await this.deps.delivery.createPullRequest({
         repository,
         head: branch,
-        base: this.deps.config.git.baseBranch,
+        base: run.baseBranch,
         title: truncate(`[${run.ticket.ref}] ${run.ticket.title}`, 120),
         body: pullRequestBody({
           ticket: run.ticket,

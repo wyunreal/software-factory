@@ -61,7 +61,6 @@ export interface RunStore {
 
 export interface BacklogPort {
   validate(): Promise<void>;
-  fetchReadyTickets(): Promise<Ticket[]>;
   claim(ticket: Ticket, run: Run): Promise<void>;
   comment(ticket: Ticket, text: string): Promise<void>;
   moveToInProgress(ticket: Ticket): Promise<void>;

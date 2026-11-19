@@ -60,7 +60,6 @@ function makeConfig(overrides: Partial<FactoryConfig> = {}): FactoryConfig {
     },
     github: {
       token: "token",
-      repository: "acme/app",
       apiUrl: "https://api.github.com",
       draft: false,
       labels: {
@@ -70,11 +69,8 @@ function makeConfig(overrides: Partial<FactoryConfig> = {}): FactoryConfig {
         ready: null,
         skip: ["factory:skip"],
       },
-      allowedRepos: [],
     },
     git: {
-      repoUrl: "https://github.com/acme/app.git",
-      baseBranch: "main",
       authorName: "Factory",
       authorEmail: "factory@example.com",
       token: "token",
@@ -91,9 +87,6 @@ class FakeBacklog implements BacklogPort {
   done = false;
 
   async validate(): Promise<void> {}
-  async fetchReadyTickets(): Promise<Ticket[]> {
-    return [];
-  }
   async claim(ticket: Ticket): Promise<void> {
     this.claimed.push(ticket.cardId);
   }

@@ -6,7 +6,6 @@ import { Logger } from "../src/logger.ts";
 
 const config: GithubConfig = {
   token: "test-token",
-  repository: "acme/app",
   apiUrl: "https://api.github.com",
   draft: false,
   labels: {
@@ -16,7 +15,6 @@ const config: GithubConfig = {
     ready: null,
     skip: ["factory:skip"],
   },
-  allowedRepos: [],
 };
 
 const issues = [
@@ -81,6 +79,9 @@ beforeAll(() => {
     const body = init?.body ? JSON.parse(String(init.body)) : null;
     calls.push({ method, path, body });
 
+    if (method === "GET" && path === "/user") {
+      return json({ login: "factory-bot" });
+    }
     if (method === "GET" && path === "/repos/acme/app") {
       return json({ full_name: "acme/app" });
     }
@@ -111,9 +112,22 @@ afterAll(() => {
 });
 
 describe("GitHub Issues backlog adapter", () => {
-  test("validates the repo and creates the required labels", async () => {
+  test("validates the token against the authenticated user", async () => {
     const backlog = new GitHubIssuesBacklog(config, new Logger({}, "error"));
     await backlog.validate();
+    expect(
+      calls.some((call) => call.method === "GET" && call.path === "/user"),
+    ).toBe(true);
+  });
+
+  test("fetches a ticket and creates the required labels", async () => {
+    const backlog = new GitHubIssuesBacklog(config, new Logger({}, "error"));
+    const ticket = await backlog.getTicket("acme/app", 1);
+    expect(ticket.ref).toBe("GH-1");
+    expect(ticket.number).toBe(1);
+    expect(ticket.repo).toBe("acme/app");
+    expect(ticket.acceptanceCriteria).toEqual(["Users can log in"]);
+
     const created = calls
       .filter((call) => call.method === "POST" && call.path.endsWith("/labels"))
       .map((call) => (call.body as { name: string }).name);
@@ -121,15 +135,6 @@ describe("GitHub Issues backlog adapter", () => {
     expect(created).toContain("factory:in-review");
     expect(created).toContain("factory:blocked");
     expect(created).toContain("factory:skip");
-  });
-
-  test("returns only open, actionable issues", async () => {
-    const backlog = new GitHubIssuesBacklog(config, new Logger({}, "error"));
-    const tickets = await backlog.fetchReadyTickets();
-    expect(tickets).toHaveLength(1);
-    expect(tickets[0]?.ref).toBe("GH-1");
-    expect(tickets[0]?.number).toBe(1);
-    expect(tickets[0]?.acceptanceCriteria).toEqual(["Users can log in"]);
   });
 
   test("claims an issue with a label and a comment", async () => {
@@ -143,6 +148,7 @@ describe("GitHub Issues backlog adapter", () => {
       url: "https://github.com/acme/app/issues/1",
       labels: [],
       acceptanceCriteria: [],
+      repo: "acme/app",
     };
     const run = { id: "run-123" } as Run;
 
@@ -172,6 +178,7 @@ describe("GitHub Issues backlog adapter", () => {
       url: "",
       labels: [],
       acceptanceCriteria: [],
+      repo: "acme/app",
     };
     issueState = "open";
     expect(await backlog.isDone(ticket)).toBe(false);

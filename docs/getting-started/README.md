@@ -118,32 +118,10 @@ Classic PATs with the `repo` scope cannot be restricted per repo. If the repo is
 in an organization that restricts fine-grained tokens, the token may need owner
 approval.
 
-With a single-repo token, also set:
-
-```env
-FACTORY_ALLOWED_REPOS=owner/your-repo
-```
-
-## Repository allowlist
-
-```env
-FACTORY_ALLOWED_REPOS=owner/app,owner/other
-```
-
-Empty means any repo the token can access. Use an allowlist in shared
-environments.
-
-## Optional polling
-
-The webapp is the primary path. To let the factory discover issues on its own:
-
-```env
-GITHUB_REPOSITORY=owner/app
-FACTORY_REPO_URL=https://github.com/owner/app.git
-```
-
-Open issues without a state label are then processed automatically. Without
-these variables, only webapp/API runs are executed.
+> **Fine-grained tokens and personal repos:** a fine-grained PAT cannot access a
+> private repository owned by **another personal account**, even when its owner
+> is a collaborator. If the target repo belongs to a different user, use a classic
+> PAT with the `repo` scope, or move the repo to an organization.
 
 ## Next
 

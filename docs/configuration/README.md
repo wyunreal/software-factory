@@ -123,17 +123,13 @@ Criteria are read from the body; plain `-` lists also work.
 | `factory:blocked` | needs human intervention |
 | `factory:skip` | ignore this issue |
 
-Pull requests returned by the issues API are filtered out.
+Pull requests are rejected as tickets.
 
 ## Environment reference
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `GITHUB_TOKEN` | — (required) | PAT with Issues, Contents, Pull requests |
-| `GITHUB_REPOSITORY` | empty | repo for polling (optional) |
-| `FACTORY_REPO_URL` | empty | polling repo URL (optional) |
-| `FACTORY_ALLOWED_REPOS` | empty | comma-separated `owner/repo` allowlist |
-| `FACTORY_BASE_BRANCH` | `main` | default base branch |
 | `FACTORY_TEST_CMD` | empty | fallback test command |
 | `FACTORY_SETUP_CMD` | empty | fallback setup command |
 | `FACTORY_MAX_REWORK` | `3` | maximum correction cycles |
@@ -146,7 +142,7 @@ Pull requests returned by the issues API are filtered out.
 | `FACTORY_LABEL_IN_PROGRESS` | `factory:in-progress` | claim label |
 | `FACTORY_LABEL_IN_REVIEW` | `factory:in-review` | review label |
 | `FACTORY_LABEL_BLOCKED` | `factory:blocked` | blocked label |
-| `FACTORY_LABEL_READY` | empty | opt-in ready label |
+| `FACTORY_LABEL_READY` | empty | optional ready label |
 | `FACTORY_SKIP_LABELS` | `factory:skip` | ignored labels |
 | `FACTORY_MODEL` | default model | `provider/model[#variant]` |
 | `OLLAMA_API_KEY` | empty | Ollama Cloud key |

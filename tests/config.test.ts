@@ -46,7 +46,6 @@ describe("repository URL parsing", () => {
 
 const baseEnv = {
   DATABASE_URL: "postgres://factory:factory@localhost:5432/factory",
-  FACTORY_REPO_URL: "https://github.com/acme/app.git",
   GITHUB_TOKEN: "ghp_test",
   OPENCODE_SERVER_PASSWORD: "secret",
   FACTORY_OPENCODE_URL: "http://opencode:4096",
@@ -55,8 +54,6 @@ const baseEnv = {
 describe("configuration", () => {
   test("loads a valid environment with defaults", () => {
     const config = loadConfig(baseEnv);
-    expect(config.git.baseBranch).toBe("main");
-    expect(config.github.repository).toBe("acme/app");
     expect(config.github.labels.inProgress).toBe("factory:in-progress");
     expect(config.github.labels.inReview).toBe("factory:in-review");
     expect(config.github.labels.blocked).toBe("factory:blocked");
@@ -107,21 +104,12 @@ describe("configuration", () => {
       FACTORY_LABEL_IN_PROGRESS: "state/doing",
       FACTORY_LABEL_READY: "state/ready",
       FACTORY_SKIP_LABELS: "wontfix, factory:skip",
-      FACTORY_ALLOWED_REPOS: "acme/app, acme/other",
       FACTORY_FEEDBACK_USERS: "Alice, Bob",
     });
     expect(config.github.labels.inProgress).toBe("state/doing");
     expect(config.github.labels.ready).toBe("state/ready");
     expect(config.github.labels.skip).toEqual(["wontfix", "factory:skip"]);
-    expect(config.github.allowedRepos).toEqual(["acme/app", "acme/other"]);
     expect(config.feedbackUsers).toEqual(["alice", "bob"]);
-  });
-
-  test("manual/webapp mode does not require a default repository", () => {
-    const { FACTORY_REPO_URL: _repo, ...manualEnv } = baseEnv;
-    const config = loadConfig(manualEnv);
-    expect(config.git.repoUrl).toBe("");
-    expect(config.github.repository).toBe("");
   });
 
   test("auto-merge configuration is parsed", () => {

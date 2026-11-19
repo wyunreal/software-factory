@@ -61,11 +61,6 @@ async function main(): Promise<void> {
   await retry(5, 3_000, "GitHub Issues validation", () => backlog.validate());
 
   const workspace = new GitWorkspace(config, logger);
-  if (config.git.repoUrl) {
-    await retry(3, 3_000, "repository bootstrap", () =>
-      workspace.ensureRepository(config.git.repoUrl),
-    );
-  }
 
   const githubDelivery =
     config.deliveryMode === "github"
@@ -99,9 +94,6 @@ async function main(): Promise<void> {
 
   log.info("software factory started", {
     port: config.port,
-    repo: config.git.repoUrl,
-    baseBranch: config.git.baseBranch,
-    githubRepository: config.github.repository || "(manual / webapp)",
     labels: config.github.labels,
     api: `http://localhost:${config.port}`,
   });

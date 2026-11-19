@@ -3,7 +3,7 @@
 ## Run lifecycle
 
 1. The webapp or `POST /api/runs` receives repo + issue URL and creates a run
-   (`CLAIMED`). Optional polling can discover issues from a default repo.
+   (`CLAIMED`).
 2. The factory validates the issue/repo pair, fetches the issue, and applies
    `factory:in-progress` plus a comment.
 3. It clones the target repo and creates an isolated worktree in
@@ -78,7 +78,7 @@ If `FACTORY_API_TOKEN` is set, send `Authorization: Bearer <token>` on
 | GET | `/api/runs` | latest runs (`?limit=`) |
 | GET | `/api/runs/:id` | run + artifacts + events |
 | POST | `/api/runs` | start with `repoUrl` + `issueUrl` |
-| POST | `/api/tick` | force a polling/work cycle |
+| POST | `/api/tick` | force a sync/work cycle |
 
 ```bash
 curl -s -X POST http://127.0.0.1:13000/api/runs \
@@ -114,7 +114,7 @@ ephemeral.
 | Path | Content |
 | --- | --- |
 | `src/index.ts` | startup, validation, shutdown |
-| `src/orchestrator.ts` | optional polling, claim, worker, closed-issue sync |
+| `src/orchestrator.ts` | worker, delivered-run sync, closed-issue sync |
 | `src/workflow.ts` | pipeline and state transitions |
 | `src/api.ts` | HTTP API |
 | `web/` | webapp |

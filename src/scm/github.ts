@@ -58,7 +58,7 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
   ) {}
 
   async createPullRequest(input: PullRequestInput): Promise<{ url: string }> {
-    const repository = input.repository || this.config.repository;
+    const repository = input.repository;
     const owner = repository.split("/")[0];
     if (!owner) {
       throw new ExternalServiceError(`Invalid GitHub repository: ${repository}`);
