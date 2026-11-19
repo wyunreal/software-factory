@@ -32,7 +32,7 @@ export type GitConfig = {
 
 export type FactoryConfig = {
   port: number;
-  apiToken: string | null;
+  apiToken: string;
   dataDir: string;
   pollIntervalMs: number;
   workerIntervalMs: number;
@@ -181,12 +181,16 @@ export function loadConfig(
   }
 
   const databaseUrl = required(env, "DATABASE_URL", problems);
+  const apiToken = required(env, "FACTORY_API_TOKEN", problems);
+  if (apiToken && apiToken.length < 16) {
+    problems.push("FACTORY_API_TOKEN must be at least 16 characters");
+  }
   const opencodePassword = optional(env, "OPENCODE_SERVER_PASSWORD") ?? "";
   const opencodeUrl = required(env, "FACTORY_OPENCODE_URL", problems);
 
   const config: FactoryConfig = {
     port: envNumber(env, "FACTORY_PORT", 3000),
-    apiToken: optional(env, "FACTORY_API_TOKEN"),
+    apiToken,
     dataDir: optional(env, "FACTORY_DATA_DIR") ?? "/data",
     pollIntervalMs: envNumber(env, "FACTORY_POLL_INTERVAL_MS", 15_000),
     workerIntervalMs: envNumber(env, "FACTORY_WORKER_INTERVAL_MS", 5_000),

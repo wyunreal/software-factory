@@ -49,6 +49,7 @@ const baseEnv = {
   GITHUB_TOKEN: "ghp_test",
   OPENCODE_SERVER_PASSWORD: "secret",
   FACTORY_OPENCODE_URL: "http://opencode:4096",
+  FACTORY_API_TOKEN: "test-api-token-123456",
 };
 
 describe("configuration", () => {
@@ -65,6 +66,7 @@ describe("configuration", () => {
     expect(config.triagePrComments).toBe(true);
     expect(config.feedbackUsers).toEqual([]);
     expect(config.maxRework).toBe(3);
+    expect(config.apiToken).toBe("test-api-token-123456");
   });
 
   test("reports all missing required values at once", () => {
@@ -78,7 +80,14 @@ describe("configuration", () => {
       expect(problems).toContain("GITHUB_TOKEN");
       expect(problems).toContain("OPENCODE_SERVER_PASSWORD");
       expect(problems).toContain("FACTORY_OPENCODE_URL");
+      expect(problems).toContain("FACTORY_API_TOKEN");
     }
+  });
+
+  test("rejects a weak API token", () => {
+    expect(() =>
+      loadConfig({ ...baseEnv, FACTORY_API_TOKEN: "short" }),
+    ).toThrow(ConfigError);
   });
 
   test("local delivery still requires GitHub for the issue backlog", () => {

@@ -127,11 +127,24 @@ factory API:
 ```bash
 cd web
 npm install
-FACTORY_API_URL=http://127.0.0.1:13000 npm run dev
+DATABASE_URL=postgres://factory:TU_PASSWORD@127.0.0.1:15432/factory \
+WEB_AUTH_SECRET="$(openssl rand -hex 32)" \
+NEXTAUTH_URL=http://localhost:8080 \
+FACTORY_API_URL=http://127.0.0.1:13000 \
+FACTORY_API_TOKEN=el-mismo-valor-que-en-el-factory \
+npm run dev
 ```
 
-It listens on <http://127.0.0.1:8080> and proxies `/api/*` server-side, adding
-`FACTORY_API_TOKEN` when set.
+It listens on <http://localhost:8080>. Create an account at `/register` with
+email/password or OAuth, if you set provider credentials. The webapp proxies
+`/api/*` server-side and adds `FACTORY_API_TOKEN`; the factory API requires it on
+every route.
+
+Webapp tests:
+
+```bash
+npm --prefix web test
+```
 
 ## 8. Cleanup
 
@@ -154,6 +167,10 @@ volume. It does not touch your local OpenCode.
 | `Repository mismatch` | issue and repo differ | use the issue's repo |
 | `Issue #N is closed` | issue closed | use an open issue |
 | Webapp 502 | factory down | `docker compose ps`; check logs |
+| Webapp 500 / `NO_SECRET` | `WEB_AUTH_SECRET` empty | set it in `.env`; restart web |
+| Webapp 500 after login | `NEXTAUTH_URL` empty | set `NEXTAUTH_URL=http://localhost:8080` |
+| `redirect_uri_mismatch` | OAuth callback differs | register `${NEXTAUTH_URL}/api/auth/callback/<provider>` |
+| OAuth provider not listed | provider env incomplete | set `AUTH_<PROVIDER>_ID` and `_SECRET`; restart web |
 | Issue not processed | state label or `factory:skip` | check labels and `/api/runs` |
 | `Setup command failed` | missing toolchain | extend `Dockerfile` or fix setup command |
 | Tests always red | missing deps/command | test inside `docker compose exec factory sh -lc '<cmd>'` |

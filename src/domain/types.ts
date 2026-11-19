@@ -34,6 +34,7 @@ export type RunState = (typeof RUN_STATES)[number];
 
 export type Run = {
   id: string;
+  ownerUserId: string | null;
   ticket: Ticket;
   state: RunState;
   repoUrl: string;

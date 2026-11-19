@@ -140,13 +140,17 @@ are stored as JSONB, not re-parsed from free text.
 
 `claimNext` selects the oldest active run. In Phase 1 there is one worker (one
 replica). The `working` flag prevents overlap inside the process, and the
-PostgreSQL unique index prevents two active runs for the same ticket. Concurrent
-processing of the same run (leases) is left for Phase 2.
+PostgreSQL unique index prevents two active runs for the same owner and ticket.
+Concurrent processing of the same run (leases) is left for Phase 2.
 
 ## Security
 
 - The OpenCode server uses basic authentication (`OPENCODE_SERVER_PASSWORD`) and
   is not published outside the Compose network.
+- Runs are owned by the webapp user that created them. The API scopes
+  `GET /api/runs` and `GET /api/runs/:id` to the `X-Factory-User-Id` supplied by
+  the authenticated webapp; artifacts and events are only reachable through an
+  owned run.
 - Agents have role-based permissions in their Markdown definition. The
   Planner/Reviewer (read-only) and Builder (write) separation is intentional.
 - OpenCode permission requests are answered automatically only for sessions

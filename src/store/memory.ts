@@ -33,13 +33,17 @@ export class MemoryRunStore implements RunStore {
     options: CreateRunOptions,
   ): Promise<Run | null> {
     const active = [...this.runs.values()].some(
-      (run) => run.ticket.cardId === ticket.cardId && run.finishedAt === null,
+      (run) =>
+        run.ownerUserId === options.ownerUserId &&
+        run.ticket.cardId === ticket.cardId &&
+        run.finishedAt === null,
     );
     if (active) return null;
 
     const at = nowIso();
     const run: Run = {
       id: crypto.randomUUID(),
+      ownerUserId: options.ownerUserId,
       ticket: { ...ticket, repoUrl: options.repoUrl },
       state: "CLAIMED",
       repoUrl: options.repoUrl,
@@ -64,12 +68,15 @@ export class MemoryRunStore implements RunStore {
     return run ? structuredClone(run) : null;
   }
 
-  async listRuns(limit: number): Promise<Run[]> {
+  async listRunsForUser(ownerUserId: string, limit: number): Promise<Run[]> {
     return [...this.runs.values()]
+      .filter((run) => run.ownerUserId === ownerUserId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, limit)
       .map((run) => structuredClone(run));
   }
+
+  async ping(): Promise<void> {}
 
   async listRunsByState(state: RunState): Promise<Run[]> {
     return [...this.runs.values()]

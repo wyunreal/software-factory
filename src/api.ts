@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import type { FactoryConfig } from "./config.ts";
 import { repositoryFromUrl } from "./config.ts";
 import type { TriggerWatcher } from "./trigger-watcher.ts";
@@ -28,8 +29,12 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
   const handleRequest = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
 
-    if (!isAuthorized(request, url, deps.config)) {
-      return json({ error: "unauthorized" }, 401);
+    if (!isAuthorized(request, deps.config)) {
+      return json(
+        { error: "unauthorized" },
+        401,
+        { "www-authenticate": "Bearer" },
+      );
     }
 
     if (request.method === "GET" && url.pathname === "/") {
@@ -48,7 +53,7 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
 
     if (request.method === "GET" && url.pathname === "/health") {
       const opencode = await safeCheck(() => deps.runtime.health());
-      const database = await safeCheck(() => deps.store.listRuns(1));
+      const database = await safeCheck(() => deps.store.ping());
       const ok = opencode.ok && database.ok;
       return json(
         {
@@ -70,11 +75,15 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
     }
 
     if (request.method === "GET" && url.pathname === "/api/runs") {
+      const userId = requestUserId(request);
+      if (!userId) return missingUser();
       const limit = clampLimit(url.searchParams.get("limit"));
-      return json({ data: await deps.store.listRuns(limit) });
+      return json({ data: await deps.store.listRunsForUser(userId, limit) });
     }
 
     if (request.method === "POST" && url.pathname === "/api/runs") {
+      const userId = requestUserId(request);
+      if (!userId) return missingUser();
       try {
         const body = (await request.json()) as StartRunBody;
         const target = parseTarget(body.repoUrl, body.issueUrl);
@@ -88,6 +97,7 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
         ticket.repoUrl = target.repoUrl;
 
         const run = await deps.store.createRun(ticket, {
+          ownerUserId: userId,
           repoUrl: target.repoUrl,
           baseBranch,
           setupCommand: body.setupCommand ?? null,
@@ -139,9 +149,13 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
 
     const match = /^\/api\/runs\/([^/]+)$/.exec(url.pathname);
     if (request.method === "GET" && match?.[1]) {
+      const userId = requestUserId(request);
+      if (!userId) return missingUser();
       const id = decodeURIComponent(match[1]);
       const run = await deps.store.getRun(id);
-      if (!run) return json({ error: "run not found" }, 404);
+      if (!run || run.ownerUserId !== userId) {
+        return json({ error: "run not found" }, 404);
+      }
       const [artifacts, events] = await Promise.all([
         deps.store.listArtifacts(id),
         deps.store.listEvents(id),
@@ -360,14 +374,36 @@ function parseBranch(value: string): string {
   return branch;
 }
 
-function isAuthorized(
-  request: Request,
-  url: URL,
-  config: FactoryConfig,
-): boolean {
-  if (!config.apiToken) return true;
-  if (!url.pathname.startsWith("/api")) return true;
-  return request.headers.get("authorization") === `Bearer ${config.apiToken}`;
+function isAuthorized(request: Request, config: FactoryConfig): boolean {
+  const header = request.headers.get("authorization")?.trim() ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  const provided = match?.[1]?.trim();
+  if (!provided) return false;
+  return constantTimeEqual(provided, config.apiToken);
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const a = Buffer.from(left, "utf8");
+  const b = Buffer.from(right, "utf8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+/**
+ * The webapp forwards the authenticated NextAuth user id on behalf of the
+ * browser. The service token authenticates the webapp; this header scopes data
+ * to one user. Never trust a header forwarded directly by a browser.
+ */
+function requestUserId(request: Request): string | null {
+  const value = request.headers.get("x-factory-user-id")?.trim() ?? "";
+  if (!value || value.length > 128 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    return null;
+  }
+  return value;
+}
+
+function missingUser(): Response {
+  return json({ error: "missing user context" }, 401);
 }
 
 function clampLimit(raw: string | null): number {
@@ -376,10 +412,18 @@ function clampLimit(raw: string | null): number {
   return Math.min(Math.max(value, 1), 200);
 }
 
-function json(body: unknown, status = 200): Response {
+function json(
+  body: unknown,
+  status = 200,
+  extraHeaders: Record<string, string> = {},
+): Response {
   return Response.json(body, {
     status,
-    headers: { "Cache-Control": "no-store" },
+    headers: {
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      ...extraHeaders,
+    },
   });
 }
 

@@ -48,17 +48,18 @@ export class PostgresRunStore implements RunStore {
     const id = crypto.randomUUID();
     const { rows } = await this.pool.query<Row>(
       `INSERT INTO runs (
-        id, ticket_card_id, ticket_ref, ticket_title, ticket_description,
+        id, owner_user_id, ticket_card_id, ticket_ref, ticket_title, ticket_description,
         ticket_url, ticket_labels, ticket_criteria, state,
         repo_url, base_branch, setup_command, test_command
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, 'CLAIMED',
-        $9, $10, $11, $12
+        $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, 'CLAIMED',
+        $10, $11, $12, $13
       )
       ON CONFLICT DO NOTHING
       RETURNING *`,
       [
         id,
+        options.ownerUserId,
         ticket.cardId,
         ticket.ref,
         ticket.title,
@@ -84,12 +85,19 @@ export class PostgresRunStore implements RunStore {
     return rows[0] ? mapRun(rows[0]) : null;
   }
 
-  async listRuns(limit: number): Promise<Run[]> {
+  async listRunsForUser(ownerUserId: string, limit: number): Promise<Run[]> {
     const { rows } = await this.pool.query<Row>(
-      "SELECT * FROM runs ORDER BY created_at DESC LIMIT $1",
-      [limit],
+      `SELECT * FROM runs
+        WHERE owner_user_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2`,
+      [ownerUserId, limit],
     );
     return rows.map(mapRun);
+  }
+
+  async ping(): Promise<void> {
+    await this.pool.query("SELECT 1");
   }
 
   async listRunsByState(state: RunState): Promise<Run[]> {
@@ -336,6 +344,7 @@ function mapRun(row: Row): Run {
   const refMatch = /^GH-(\d+)$/i.exec(ticketRef);
   return {
     id: String(row.id),
+    ownerUserId: nullableString(row.owner_user_id),
     ticket: {
       cardId: String(row.ticket_card_id),
       ref: ticketRef,

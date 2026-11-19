@@ -11,7 +11,7 @@ import type { Ticket } from "../src/domain/types.ts";
 function makeConfig(port: number): FactoryConfig {
   return {
     port,
-    apiToken: null,
+    apiToken: "test-api-token-123456",
     dataDir: "/tmp/software-factory-api-test",
     pollIntervalMs: 1000,
     workerIntervalMs: 1000,
@@ -98,6 +98,76 @@ async function setup(port: number) {
   return { server, store };
 }
 
+const TOKEN = "test-api-token-123456";
+const USER_A = "usr_test_a";
+const USER_B = "usr_test_b";
+const AUTH_HEADERS = {
+  authorization: `Bearer ${TOKEN}`,
+  "content-type": "application/json",
+  "x-factory-user-id": USER_A,
+};
+
+function headersFor(userId: string): Record<string, string> {
+  return { ...AUTH_HEADERS, "x-factory-user-id": userId };
+}
+
+describe("API authentication", () => {
+  test("rejects requests without a bearer token", async () => {
+    const port = 19000 + Math.floor(Math.random() * 300);
+    const { server } = await setup(port);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/runs`);
+      expect(response.status).toBe(401);
+      expect(response.headers.get("www-authenticate")).toBe("Bearer");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("rejects a wrong token even on public-looking routes", async () => {
+    const port = 19400 + Math.floor(Math.random() * 200);
+    const { server } = await setup(port);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/health`, {
+        headers: { authorization: "Bearer wrong-token-wrong-token" },
+      });
+      expect(response.status).toBe(401);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("accepts the configured token on health and root", async () => {
+    const port = 19800 + Math.floor(Math.random() * 150);
+    const { server } = await setup(port);
+    try {
+      const headers = { authorization: `Bearer ${TOKEN}` };
+      const health = await fetch(`http://127.0.0.1:${port}/health`, { headers });
+      expect(health.status).toBe(200);
+
+      const root = await fetch(`http://127.0.0.1:${port}/`, { headers });
+      expect(root.status).toBe(200);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("requires a user context for run data", async () => {
+    const port = 19200 + Math.floor(Math.random() * 150);
+    const { server } = await setup(port);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/runs`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      });
+      expect(response.status).toBe(401);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toContain("user");
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
 describe("POST /api/runs", () => {
   test("creates a run from repo + issue URL", async () => {
     const port = 19100 + Math.floor(Math.random() * 500);
@@ -105,7 +175,7 @@ describe("POST /api/runs", () => {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/runs`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: AUTH_HEADERS,
         body: JSON.stringify({
           repoUrl: "https://github.com/acme/app",
           issueUrl: "https://github.com/acme/app/issues/7",
@@ -133,7 +203,7 @@ describe("POST /api/runs", () => {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/runs`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: AUTH_HEADERS,
         body: JSON.stringify({
           repoUrl: "https://github.com/acme/other",
           issueUrl: "https://github.com/acme/app/issues/7",
@@ -142,6 +212,87 @@ describe("POST /api/runs", () => {
       expect(response.status).toBe(400);
       const body = (await response.json()) as { error: string };
       expect(body.error).toContain("mismatch");
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe("per-user isolation", () => {
+  test("does not expose one user's runs to another", async () => {
+    const port = 19900 + Math.floor(Math.random() * 80);
+    const { server, store } = await setup(port);
+    try {
+      const created = await fetch(`http://127.0.0.1:${port}/api/runs`, {
+        method: "POST",
+        headers: headersFor(USER_A),
+        body: JSON.stringify({
+          repoUrl: "https://github.com/acme/app",
+          issueUrl: "https://github.com/acme/app/issues/7",
+        }),
+      });
+      expect(created.status).toBe(201);
+      const body = (await created.json()) as { data: { id: string } };
+      const run = await store.getRun(body.data.id);
+      expect(run?.ownerUserId).toBe(USER_A);
+
+      const ownList = await fetch(`http://127.0.0.1:${port}/api/runs`, {
+        headers: headersFor(USER_A),
+      });
+      const own = (await ownList.json()) as { data: { id: string }[] };
+      expect(own.data.map((item) => item.id)).toEqual([body.data.id]);
+
+      const otherList = await fetch(`http://127.0.0.1:${port}/api/runs`, {
+        headers: headersFor(USER_B),
+      });
+      const other = (await otherList.json()) as { data: { id: string }[] };
+      expect(other.data).toEqual([]);
+
+      const otherRun = await fetch(
+        `http://127.0.0.1:${port}/api/runs/${encodeURIComponent(body.data.id)}`,
+        { headers: headersFor(USER_B) },
+      );
+      expect(otherRun.status).toBe(404);
+
+      const ownRun = await fetch(
+        `http://127.0.0.1:${port}/api/runs/${encodeURIComponent(body.data.id)}`,
+        { headers: headersFor(USER_A) },
+      );
+      expect(ownRun.status).toBe(200);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("allows two users to have active runs for the same issue", async () => {
+    const port = 19990 - Math.floor(Math.random() * 60);
+    const { server } = await setup(port);
+    try {
+      const payload = JSON.stringify({
+        repoUrl: "https://github.com/acme/app",
+        issueUrl: "https://github.com/acme/app/issues/7",
+      });
+
+      const first = await fetch(`http://127.0.0.1:${port}/api/runs`, {
+        method: "POST",
+        headers: headersFor(USER_A),
+        body: payload,
+      });
+      expect(first.status).toBe(201);
+
+      const duplicate = await fetch(`http://127.0.0.1:${port}/api/runs`, {
+        method: "POST",
+        headers: headersFor(USER_A),
+        body: payload,
+      });
+      expect(duplicate.status).toBe(409);
+
+      const second = await fetch(`http://127.0.0.1:${port}/api/runs`, {
+        method: "POST",
+        headers: headersFor(USER_B),
+        body: payload,
+      });
+      expect(second.status).toBe(201);
     } finally {
       server.stop(true);
     }

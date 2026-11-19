@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS runs (
   id text PRIMARY KEY,
+  owner_user_id text,
   ticket_card_id text NOT NULL,
   ticket_ref text NOT NULL,
   ticket_title text NOT NULL,
@@ -22,12 +23,18 @@ CREATE TABLE IF NOT EXISTS runs (
   finished_at timestamptz
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS runs_active_ticket
-  ON runs (ticket_card_id)
-  WHERE finished_at IS NULL;
-
 CREATE INDEX IF NOT EXISTS runs_state_idx ON runs (state);
 CREATE INDEX IF NOT EXISTS runs_created_idx ON runs (created_at DESC);
+
+-- Runs are owned by the webapp user that created them. Legacy runs may have no
+-- owner and are never returned by the user-facing API.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS owner_user_id text;
+DROP INDEX IF EXISTS runs_active_ticket;
+CREATE UNIQUE INDEX IF NOT EXISTS runs_active_owner_ticket
+  ON runs (owner_user_id, ticket_card_id)
+  WHERE finished_at IS NULL AND owner_user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS runs_owner_created_idx
+  ON runs (owner_user_id, created_at DESC);
 
 -- Forward-compatible additions for databases created by earlier versions.
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS repo_url text NOT NULL DEFAULT '';
@@ -85,3 +92,84 @@ CREATE TABLE IF NOT EXISTS run_jobs (
 
 CREATE INDEX IF NOT EXISTS run_jobs_pending_idx
   ON run_jobs (status, available_at, created_at);
+
+-- Webapp accounts. The web container owns authentication; the factory
+-- migration creates the table so a least-privilege WEB_DATABASE_URL role can
+-- be granted DML on users without DDL permissions.
+-- Existing installations created `web_users`; rename it without losing rows.
+DO $$
+BEGIN
+  IF to_regclass('public.web_users') IS NOT NULL
+     AND to_regclass('public.users') IS NULL THEN
+    ALTER TABLE web_users RENAME TO users;
+    IF to_regclass('public.web_users_email_lower_idx') IS NOT NULL
+       AND to_regclass('public.users_email_lower_idx') IS NULL THEN
+      ALTER INDEX web_users_email_lower_idx RENAME TO users_email_lower_idx;
+    END IF;
+  END IF;
+END;
+$$;
+
+CREATE TABLE IF NOT EXISTS users (
+  id text PRIMARY KEY,
+  email text NOT NULL,
+  name text NOT NULL DEFAULT '',
+  image text,
+  password_hash text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Forward-compatible additions for databases created by earlier versions.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS image text;
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx
+  ON users (lower(email));
+
+-- OAuth identities linked to local accounts. A user may have credentials and
+-- several OAuth providers; (provider, provider_account_id) is the stable key.
+CREATE TABLE IF NOT EXISTS user_identities (
+  provider text NOT NULL,
+  provider_account_id text NOT NULL,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (provider, provider_account_id)
+);
+
+CREATE INDEX IF NOT EXISTS user_identities_user_idx
+  ON user_identities (user_id);
+
+-- Runs must be owned by a user. Existing runs are backfilled only when there is
+-- exactly one account; otherwise legacy runs stay ownerless and invisible.
+DO $$
+DECLARE
+  only_user text;
+BEGIN
+  IF to_regclass('public.users') IS NOT NULL THEN
+    IF (SELECT count(*) FROM users) = 1 THEN
+      SELECT id INTO only_user FROM users LIMIT 1;
+      UPDATE runs SET owner_user_id = only_user WHERE owner_user_id IS NULL;
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+       WHERE conname = 'runs_owner_user_fk'
+         AND conrelid = 'runs'::regclass
+    ) THEN
+      ALTER TABLE runs
+        ADD CONSTRAINT runs_owner_user_fk
+        FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE;
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+       WHERE conname = 'runs_owner_user_required'
+         AND conrelid = 'runs'::regclass
+    ) THEN
+      ALTER TABLE runs
+        ADD CONSTRAINT runs_owner_user_required
+        CHECK (owner_user_id IS NOT NULL) NOT VALID;
+    END IF;
+  END IF;
+END;
+$$;

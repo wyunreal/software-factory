@@ -25,6 +25,7 @@ export type RunPatch = {
 };
 
 export type CreateRunOptions = {
+  ownerUserId: string;
   repoUrl: string;
   baseBranch: string;
   setupCommand?: string | null;
@@ -34,8 +35,9 @@ export type CreateRunOptions = {
 export interface RunStore {
   createRun(ticket: Ticket, options: CreateRunOptions): Promise<Run | null>;
   getRun(id: string): Promise<Run | null>;
-  listRuns(limit: number): Promise<Run[]>;
+  listRunsForUser(ownerUserId: string, limit: number): Promise<Run[]>;
   listRunsByState(state: RunState): Promise<Run[]>;
+  ping(): Promise<void>;
   claimNext(): Promise<Run | null>;
   updateRun(id: string, patch: RunPatch): Promise<Run>;
   transition(id: string, to: RunState, patch?: RunPatch): Promise<Run>;

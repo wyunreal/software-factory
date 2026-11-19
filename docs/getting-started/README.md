@@ -60,6 +60,10 @@ docker compose ps
 docker compose logs -f factory
 ```
 
+`.env` must include `FACTORY_API_TOKEN` and `WEB_AUTH_SECRET` (generate each
+with `openssl rand -hex 32`); Compose refuses to start without them. OAuth
+providers are optional; set `AUTH_<PROVIDER>_ID`/`_SECRET` to enable them.
+
 Compose starts four services: `postgres`, `opencode`, `factory`, and `web`. No
 manual OpenCode process is needed.
 
@@ -73,11 +77,16 @@ manual OpenCode process is needed.
 Check health:
 
 ```bash
-curl -s http://127.0.0.1:13000/health | jq
+curl -s -H "Authorization: Bearer $FACTORY_API_TOKEN" \
+  http://127.0.0.1:13000/health | jq
 docker compose exec factory npm run opencode-check
 ```
 
-Open the webapp at <http://127.0.0.1:8080>.
+Open the webapp at <http://localhost:8080> and create an account at
+<http://localhost:8080/register>. You can register with email/password or use
+any OAuth2 provider configured in `.env`. Every webapp page and API request
+requires a signed-in session. Use `localhost` rather than `127.0.0.1` for OAuth
+so the callback URL matches.
 
 ## Start a run
 

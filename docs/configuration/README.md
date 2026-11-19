@@ -125,6 +125,43 @@ Criteria are read from the body; plain `-` lists also work.
 
 Pull requests are rejected as tickets.
 
+## Webapp authentication
+
+The webapp is closed by default: every page except `/login` and `/register`
+requires a signed-in session, and every `/api/*` request is rejected without
+one. Users live in the `users` table; OAuth links live in `user_identities`.
+
+Stable NextAuth v4 supports email/password (Credentials) plus OAuth2. Enable
+any subset with the provider credentials; the buttons appear automatically.
+Register the callback URL in each provider:
+`${NEXTAUTH_URL}/api/auth/callback/<provider>`.
+
+```env
+FACTORY_API_TOKEN=<openssl rand -hex 32>   # required, also protects the API
+WEB_AUTH_SECRET=<openssl rand -hex 32>     # required, encrypts session JWTs
+NEXTAUTH_URL=http://localhost:8080         # public origin for OAuth callbacks
+AUTH_TRUST_HOST=true                       # behind a reverse proxy
+WEB_REGISTRATION_CODE=                     # optional code for password sign-up
+WEB_COOKIE_SECURE=false                    # true behind HTTPS
+WEB_SESSION_TTL_HOURS=168                  # 1-720
+WEB_DATABASE_URL=                          # optional least-privilege DB role
+
+AUTH_GOOGLE_ID=                            # and _SECRET
+AUTH_GITHUB_ID=                            # and _SECRET
+AUTH_APPLE_ID=                             # and _SECRET (client secret JWT)
+AUTH_AZURE_AD_ID=                          # and _SECRET, _TENANT_ID
+AUTH_GITLAB_ID=                            # and _SECRET
+```
+
+For local OAuth use <http://localhost:8080> (not `127.0.0.1`) and register that
+exact callback. Apple requires a public HTTPS return URL. The factory API
+requires `Authorization: Bearer $FACTORY_API_TOKEN` on every route, including
+`/health`.
+
+OAuth sign-in links an identity to an existing account only when the provider
+confirms the email. Password sign-up still works at `/register`; use
+`WEB_REGISTRATION_CODE` to gate it.
+
 ## Environment reference
 
 | Variable | Default | Description |
@@ -150,7 +187,23 @@ Pull requests are rejected as tickets.
 | `OLLAMA_API_KEY` | empty | Ollama Cloud key |
 | `FACTORY_OPENCODE_URL` | — (required) | isolated runtime URL |
 | `FACTORY_HOST_PORT` | `3000` | API host port |
+| `FACTORY_API_TOKEN` | — (required) | bearer token for every factory API route |
 | `WEB_HOST_PORT` | `8080` | webapp host port |
+| `WEB_AUTH_SECRET` | — (required) | encrypts NextAuth session JWTs (32+ chars) |
+| `WEB_REGISTRATION_CODE` | empty | required invite code when set |
+| `WEB_COOKIE_SECURE` | `false` | mark session cookies `Secure` (HTTPS) |
+| `WEB_SESSION_TTL_HOURS` | `168` | webapp session lifetime |
+| `WEB_PUBLIC_ORIGIN` | empty | public origin used to derive cookie security |
+| `WEB_DATABASE_URL` | empty | DB URL for `users` (falls back to `DATABASE_URL`) |
+| `NEXTAUTH_URL` | `http://localhost:8080` | public origin used for OAuth callbacks |
+| `NEXTAUTH_SECRET` | `WEB_AUTH_SECRET` | optional alias for the NextAuth secret |
+| `AUTH_TRUST_HOST` | `true` | trust the forwarded host behind a proxy |
+| `AUTH_GOOGLE_ID` / `_SECRET` | empty | Google OAuth client |
+| `AUTH_GITHUB_ID` / `_SECRET` | empty | GitHub OAuth app |
+| `AUTH_APPLE_ID` / `_SECRET` | empty | Apple Services ID and client secret JWT |
+| `AUTH_AZURE_AD_ID` / `_SECRET` | empty | Microsoft Entra ID app; provider id `azure-ad` |
+| `AUTH_AZURE_AD_TENANT_ID` | `common` | Entra ID tenant |
+| `AUTH_GITLAB_ID` / `_SECRET` | empty | GitLab.com OAuth app |
 | `POSTGRES_USER` | `factory` | PostgreSQL user |
 | `POSTGRES_PASSWORD` | — (required) | PostgreSQL password from `.env` |
 | `POSTGRES_DB` | `factory` | database |

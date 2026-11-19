@@ -71,8 +71,14 @@ Agents communicate through artifacts, not only conversation.
 
 ## API
 
-If `FACTORY_API_TOKEN` is set, send `Authorization: Bearer <token>` on
-`/api/*`.
+Every route requires `Authorization: Bearer $FACTORY_API_TOKEN`, including
+`/`, `/health` and `/api/*`. The webapp adds it server-side; the browser never
+sees it.
+
+Run data is scoped per user. `/api/runs` and `/api/runs/:id` also require
+`X-Factory-User-Id: <user id>`; the webapp sets it from the NextAuth session.
+Direct callers must pass it for those routes. A run owned by another user is
+reported as `404`.
 
 | Method | Path | Description |
 | --- | --- | --- |
@@ -85,6 +91,8 @@ If `FACTORY_API_TOKEN` is set, send `Authorization: Bearer <token>` on
 
 ```bash
 curl -s -X POST http://127.0.0.1:13000/api/runs \
+  -H "Authorization: Bearer $FACTORY_API_TOKEN" \
+  -H "X-Factory-User-Id: usr_..." \
   -H 'Content-Type: application/json' \
   -d '{
     "repoUrl": "https://github.com/owner/app",

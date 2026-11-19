@@ -1,4 +1,6 @@
+import { getServerSession } from "next-auth/next";
 import type { NextRequest } from "next/server";
+import { authOptions } from "@/lib/auth/options";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +17,15 @@ async function proxy(
   request: NextRequest,
   context: RouteContext,
 ): Promise<Response> {
+  const session = await getServerSession(authOptions);
+  const userId = session?.user?.id;
+  if (!userId) {
+    return Response.json(
+      { error: "unauthorized" },
+      { status: 401, headers: { "cache-control": "no-store" } },
+    );
+  }
+
   const { path = [] } = await context.params;
   const token = process.env.FACTORY_API_TOKEN?.trim() ?? "";
   const target = `${factoryUrl()}/api/${path.join("/")}${request.nextUrl.search}`;
@@ -23,6 +34,8 @@ async function proxy(
   const contentType = request.headers.get("content-type");
   if (contentType) headers.set("content-type", contentType);
   if (token) headers.set("authorization", `Bearer ${token}`);
+  // Scoped per authenticated user; never copied from the incoming request.
+  headers.set("x-factory-user-id", userId);
 
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
 

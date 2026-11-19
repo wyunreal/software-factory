@@ -309,10 +309,114 @@ dd a {
   color: var(--muted);
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.user {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+main.auth {
+  width: min(460px, calc(100% - 32px));
+  display: block;
+  padding-top: 10vh;
+}
+
+.auth-card form {
+  margin-top: 20px;
+}
+
+.oauth {
+  margin-top: 20px;
+}
+
+.oauth-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.oauth-button {
+  justify-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 11px 14px;
+}
+
+.oauth-button:hover {
+  border-color: var(--accent);
+}
+
+.oauth-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(124, 156, 255, 0.15);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.oauth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.oauth-divider::before,
+.oauth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.auth-card .message {
+  margin-top: 16px;
+}
+
+.auth-switch {
+  margin: 18px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.auth-switch a {
+  color: var(--accent);
+}
+
 @media (max-width: 640px) {
   header {
     flex-direction: column;
     padding-top: 32px;
+  }
+
+  .header-actions {
+    justify-content: flex-start;
   }
 
   .run-row {

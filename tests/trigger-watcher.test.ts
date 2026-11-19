@@ -21,6 +21,7 @@ const ticket: Ticket = {
 
 async function humanReviewRun(store: MemoryRunStore) {
   const run = await store.createRun(ticket, {
+    ownerUserId: "usr_test",
     repoUrl: ticket.repoUrl!,
     baseBranch: "main",
   });

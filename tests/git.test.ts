@@ -14,7 +14,7 @@ const origin = join(root, "origin");
 function makeConfig(dataDir: string): FactoryConfig {
   return {
     port: 0,
-    apiToken: null,
+    apiToken: "test-api-token-123456",
     dataDir,
     pollIntervalMs: 1000,
     workerIntervalMs: 1000,
@@ -70,6 +70,7 @@ function run(cmd: string[], cwd: string): void {
 function makeRun(repoUrl: string): Run {
   return {
     id: "1234abcd-0000-0000-0000-000000000000",
+    ownerUserId: "usr_test",
     ticket: {
       cardId: "1",
       number: 1,

@@ -18,6 +18,7 @@ const ticket: Ticket = {
 async function seededStore() {
   const store = new MemoryRunStore();
   const run = await store.createRun(ticket, {
+    ownerUserId: "usr_test",
     repoUrl: ticket.repoUrl!,
     baseBranch: "main",
   });

@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { signOutClient } from "@/lib/auth/client";
 import { ApiError, readJson } from "@/lib/http";
-import type { Run, RunResponse, RunsResponse } from "@/lib/types";
+import type { AuthUser, Run, RunResponse, RunsResponse } from "@/lib/types";
 
 const TERMINAL_STATES = new Set(["HUMAN_REVIEW", "DONE", "BLOCKED"]);
 
-export function Dashboard() {
+export function Dashboard({ user }: { user: AuthUser }) {
   const [runs, setRuns] = useState<Run[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<Run | null>(null);
@@ -109,6 +110,14 @@ export function Dashboard() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  async function logout() {
+    try {
+      await signOutClient();
+    } catch {
+      window.location.assign("/login");
+    }
+  }
+
   return (
     <>
       <header>
@@ -121,9 +130,15 @@ export function Dashboard() {
             para revisión.
           </p>
         </div>
-        <a className="pill" href="/api/runs" target="_blank" rel="noreferrer">
-          API runs
-        </a>
+        <div className="header-actions">
+          <span className="user">{user.name || user.email}</span>
+          <a className="pill" href="/api/runs" target="_blank" rel="noreferrer">
+            API runs
+          </a>
+          <button className="ghost" type="button" onClick={() => void logout()}>
+            Salir
+          </button>
+        </div>
       </header>
 
       <main>
@@ -192,7 +207,7 @@ export function Dashboard() {
 
         <section className="card">
           <div className="run-header">
-            <h2>Últimas ejecuciones</h2>
+            <h2>Tus ejecuciones</h2>
             <button
               className="ghost"
               type="button"
@@ -204,7 +219,7 @@ export function Dashboard() {
           </div>
           <div className="runs">
             {runs.length === 0 ? (
-              <p className="muted">Todavía no hay ejecuciones.</p>
+              <p className="muted">Todavía no has creado ejecuciones.</p>
             ) : (
               runs.map((run) => (
                 <button

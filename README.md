@@ -20,6 +20,10 @@ flowchart LR
 ## What it does
 
 - Starts a run from a webapp with **repo + issue URL**.
+- Webapp sign-in with **email/password or OAuth2** (Google, GitHub, Apple,
+  Microsoft Entra ID, GitLab) via stable NextAuth v4.
+- Runs, artifacts and events are isolated per user; each account sees only its
+  own executions.
 - Planner → Builder → QA → deterministic tests → Reviewer.
 - Isolated git worktree and `factory/<ticket>-<run>` branch per run.
 - Same-PR rework on `CHANGES_REQUESTED`; PR comments are triaged before any
@@ -37,9 +41,17 @@ docker compose up --build -d
 docker compose ps
 ```
 
-Webapp: <http://127.0.0.1:8080>
+`FACTORY_API_TOKEN` and `WEB_AUTH_SECRET` are required. Generate each one
+with `openssl rand -hex 32`.
 
-Health: `http://127.0.0.1:13000/health` (or your `FACTORY_HOST_PORT`).
+Webapp: <http://localhost:8080>. Create the first account at `/register` with
+email/password or any OAuth2 provider configured in `.env`; from then on the
+webapp and its API proxy require a signed-in session.
+
+Health:
+`curl -H "Authorization: Bearer $FACTORY_API_TOKEN" http://127.0.0.1:13000/health`
+(or your `FACTORY_HOST_PORT`). The factory API requires the bearer token on
+every route.
 
 Your local OpenCode is never touched. The factory runs its own OpenCode
 container on an internal port, with its own config and data volume.

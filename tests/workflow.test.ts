@@ -33,7 +33,7 @@ const TICKET: Ticket = {
 function makeConfig(overrides: Partial<FactoryConfig> = {}): FactoryConfig {
   return {
     port: 3000,
-    apiToken: null,
+    apiToken: "test-api-token-123456",
     dataDir: "/tmp/software-factory-test",
     pollIntervalMs: 1000,
     workerIntervalMs: 1000,
@@ -186,6 +186,7 @@ function setup(options: {
 
 async function createRun(store: MemoryRunStore): Promise<Run> {
   const run = await store.createRun(TICKET, {
+    ownerUserId: "usr_test",
     repoUrl: "https://github.com/acme/app.git",
     baseBranch: "main",
   });
