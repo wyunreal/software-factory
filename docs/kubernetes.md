@@ -13,7 +13,7 @@ Everything lives in the `software-factory` namespace:
 
 | Workload | Service | Exposure |
 | --- | --- | --- |
-| Next.js webapp | `web:8080` | **Public HTTPS Ingress** |
+| Next.js webapp | `web:8080` | **Public HTTPS Ingress**; optional NodePort for Tailscale Funnel |
 | Factory orchestrator | `factory:3000` | ClusterIP only |
 | OpenCode runtime | `opencode:4096` | ClusterIP only |
 | PostgreSQL 17 | `postgres:5432` | ClusterIP only |
@@ -188,6 +188,51 @@ Setup URL:    https://web.factory.warias.app/api/github/install/callback
 The webhook is public because it enters through the webapp; the factory
 endpoint it forwards to is ClusterIP-only. Subscribe to the events documented
 in the main README.
+
+## Tailscale Funnel (no public IP)
+
+When the k3s host is behind CGNAT or the webapp is LAN-only, GitHub cannot reach
+`web.factory.warias.app`. The chart can create a NodePort that a host-level
+Tailscale Funnel proxies to the public `*.ts.net` hostname. No DNS change is
+needed and `warias.app` stays in Porkbun.
+
+The k3s host must already be a Tailscale node. In the Tailscale admin console,
+enable **MagicDNS** and **HTTPS Certificates**, and allow Funnel for the node
+(`nodeAttrs` with `autogroup:member`, or the node's tag).
+
+The chart creates `web-webhook` when `web.tailscaleFunnel.enabled=true`
+(`nodePort: 30080` by default). On the k3s host:
+
+```bash
+# The NodePort must answer locally before configuring Funnel.
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  http://127.0.0.1:30080/api/github/webhook
+# 401: wrong signature, which means the webapp received the request.
+
+sudo tailscale funnel --bg --https=443 \
+  --set-path=/api/github/webhook \
+  http://127.0.0.1:30080/api/github/webhook
+
+tailscale funnel status
+```
+
+The public URL is:
+
+```text
+https://<host>.<tailnet>.ts.net/api/github/webhook
+```
+
+Verify from a device outside the tailnet (for example, a phone on mobile data):
+an unsigned `POST` must return `401`, not `404` or `502`. Then set the GitHub App
+webhook to that URL.
+
+Only `/api/github/webhook` is mounted; every other path returns `404`. Do not
+forward the NodePort from the router: the public entry point is the Funnel
+hostname, and the factory API remains ClusterIP-only.
+
+After a real delivery returns `202`, set `FACTORY_PR_POLLING: "false"` in
+`charts/software-factory/values.yaml` and redeploy. Keep polling enabled until
+the Funnel is verified.
 
 ## Common operations
 

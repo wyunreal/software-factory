@@ -6,6 +6,7 @@ This chart deploys the complete Software Factory stack into the
 | Workload | Service | Exposure |
 | --- | --- | --- |
 | Next.js webapp | `web:8080` | HTTPS Ingress (the only public workload) |
+| Webhook NodePort | `web-webhook:30080` | Optional, loopback target for host-level Tailscale Funnel |
 | Factory orchestrator | `factory:3000` | ClusterIP only |
 | OpenCode runtime | `opencode:4096` | ClusterIP only |
 | PostgreSQL 17 | `postgres:5432` | ClusterIP only |
@@ -53,5 +54,23 @@ helm upgrade --install software-factory ./charts/software-factory \
 
 Normally you use `./scripts/deploy-remote-k3s.sh <user> <host>`, which seals the
 secrets, builds the images, imports them into k3s and runs Helm.
+
+## Tailscale Funnel
+
+`web.tailscaleFunnel.enabled` creates the `web-webhook` NodePort Service. It
+exists so a host-level Tailscale Funnel can proxy the public GitHub webhook to
+`http://127.0.0.1:30080/api/github/webhook` without exposing the factory API or
+the rest of the webapp.
+
+Run the Funnel command on the k3s host, not in this chart:
+
+```bash
+sudo tailscale funnel --bg --https=443 \
+  --set-path=/api/github/webhook \
+  http://127.0.0.1:30080/api/github/webhook
+```
+
+Do not forward the NodePort from the router. Only the Funnel hostname is public,
+and only the mounted webhook path is routed.
 
 See [docs/kubernetes.md](../../docs/kubernetes.md) for the full guide.

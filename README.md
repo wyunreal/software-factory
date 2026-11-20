@@ -85,8 +85,11 @@ Subscribe to **Pull requests**, **Pull request reviews**, **Pull request review
 comments**, **Issue comments**, **Check suites**, **Check runs** and **Commit
 statuses**. The App sends events for every repository where it is installed; the
 webapp verifies `X-Hub-Signature-256` and forwards them to the internal factory
-API. Users only install the App once per repository or organization. For local
-development without a public URL, set `FACTORY_PR_POLLING=true` as a fallback.
+API. Users only install the App once per repository or organization. When the
+webapp is LAN-only, expose the webhook through a host-level Tailscale Funnel
+(see [Kubernetes / k3s](docs/kubernetes.md#tailscale-funnel-no-public-ip)).
+Set `FACTORY_PR_POLLING=true` only as a temporary fallback until webhooks are
+verified.
 
 Your local OpenCode is never touched. The factory runs its own OpenCode
 container on an internal port, with its own config and data volume.
@@ -97,8 +100,10 @@ The `charts/software-factory` Helm chart deploys PostgreSQL, the isolated
 OpenCode runtime, the factory orchestrator and the Next.js webapp into the
 `software-factory` namespace. Only the webapp is exposed, through an HTTPS
 Ingress issued by cert-manager/Let's Encrypt; the GitHub webhook also enters
-through the webapp. Secrets are sealed with Sealed Secrets and stored as
-Kubernetes Secrets in the cluster; no plaintext secret is mounted or baked into
+through the webapp. A LAN-only cluster can expose just the webhook path with a
+host-level Tailscale Funnel instead of a public Ingress. Secrets are sealed with
+Sealed Secrets and stored as Kubernetes Secrets in the cluster; no plaintext
+secret is mounted or baked into
 an image. The sealed secret is generated locally from `.env` on every deploy
 and is gitignored.
 

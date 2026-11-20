@@ -5,6 +5,21 @@ Software Factory has been deployed to namespace {{ .Release.Namespace }}.
 Webapp (HTTPS): https://{{ .Values.ingress.host }}
 GitHub webhook: https://{{ .Values.ingress.host }}/api/github/webhook
 {{- end }}
+{{- if .Values.web.tailscaleFunnel.enabled }}
+
+Tailscale Funnel target on the k3s host:
+
+  http://127.0.0.1:{{ .Values.web.tailscaleFunnel.nodePort }}/api/github/webhook
+
+Configure it with:
+
+  sudo tailscale funnel --bg --https=443 \
+    --set-path=/api/github/webhook \
+    http://127.0.0.1:{{ .Values.web.tailscaleFunnel.nodePort }}/api/github/webhook
+
+Then point the GitHub App webhook at the Funnel hostname. Only that path is
+mounted; do not forward the NodePort from the router.
+{{- end }}
 
 Only the webapp is exposed. The factory API, OpenCode runtime and PostgreSQL
 are ClusterIP services and are not reachable from outside the cluster.

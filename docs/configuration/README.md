@@ -231,7 +231,9 @@ Secret: GITHUB_APP_WEBHOOK_SECRET
 
 The webapp verifies `X-Hub-Signature-256` with HMAC-SHA256 and forwards the
 delivery to the internal factory API. Set `FACTORY_PR_POLLING=true` only as a
-local fallback when GitHub cannot reach the webapp.
+local fallback when GitHub cannot reach the webapp. For a LAN-only cluster,
+expose just `/api/github/webhook` with a host-level Tailscale Funnel instead;
+see [Kubernetes / k3s](../kubernetes.md#tailscale-funnel-no-public-ip).
 
 ## Environment reference
 

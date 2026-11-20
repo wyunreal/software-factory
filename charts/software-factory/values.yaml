@@ -67,6 +67,13 @@ web:
     capabilities:
       drop:
         - ALL
+  # Optional NodePort used only by the host-level Tailscale Funnel. Funnel
+  # proxies to 127.0.0.1:<nodePort> on the k3s host. Do not forward this port
+  # from the router: the public entry point is the Tailscale Funnel hostname,
+  # and only /api/github/webhook is mounted there.
+  tailscaleFunnel:
+    enabled: true
+    nodePort: 30080
 
 postgres:
   image:
