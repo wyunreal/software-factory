@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth/next";
 import { NextResponse, type NextRequest } from "next/server";
 import { authOptions } from "@/lib/auth/options";
 import { verifyInstallState } from "@/lib/github/install-state";
+import { publicOrigin } from "@/lib/public-origin";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,7 +18,9 @@ export async function GET(request: NextRequest): Promise<Response> {
   const session = await getServerSession(authOptions);
   const userId = session?.user?.id;
   if (!userId) {
-    return NextResponse.redirect(new URL("/login", request.url));
+    return NextResponse.redirect(
+      new URL("/login", publicOrigin(request.nextUrl.origin)),
+    );
   }
 
   const params = request.nextUrl.searchParams;
@@ -107,7 +110,7 @@ function redirectTo(
   path: string,
   params: Record<string, string>,
 ): NextResponse {
-  const url = new URL(path, request.url);
+  const url = new URL(path, publicOrigin(request.nextUrl.origin));
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
   }

@@ -1,6 +1,7 @@
 import { getToken } from "next-auth/jwt";
 import { NextResponse, type NextRequest } from "next/server";
 import { secureCookies } from "@/lib/auth/config";
+import { publicOrigin } from "@/lib/public-origin";
 
 const PUBLIC_PAGES = new Set(["/login", "/register"]);
 const AUTH_API_PREFIX = "/api/auth";
@@ -33,7 +34,11 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   const authenticated = await hasValidSession(request);
 
   if (PUBLIC_PAGES.has(pathname)) {
-    if (authenticated) return NextResponse.redirect(new URL("/", request.url));
+    if (authenticated) {
+      return NextResponse.redirect(
+        new URL("/", publicOrigin(request.nextUrl.origin)),
+      );
+    }
     return NextResponse.next();
   }
 
@@ -50,7 +55,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
         },
       );
     }
-    const login = new URL("/login", request.url);
+    const login = new URL("/login", publicOrigin(request.nextUrl.origin));
     login.searchParams.set("next", `${pathname}${search}`);
     return NextResponse.redirect(login);
   }
