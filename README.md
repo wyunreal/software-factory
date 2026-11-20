@@ -48,8 +48,8 @@ docker compose ps
 `FACTORY_API_TOKEN`, `WEB_AUTH_SECRET` and `GITHUB_APP_WEBHOOK_SECRET` are
 required, plus the GitHub App credentials (`GITHUB_APP_ID`,
 `GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_SLUG`). In production the webapp lives
-at <https://web.factory.warias.app> and the factory API at
-<https://factory.warias.app>.
+at <https://web.factory.warias.app> and is the only public entry point. The
+factory API, OpenCode runtime and PostgreSQL stay inside the cluster.
 
 Webapp: <https://web.factory.warias.app>. Create the first account at
 `/register` with email/password or any OAuth2 provider configured in `.env`;
@@ -58,8 +58,19 @@ not installed on that repository yet, the webapp offers the installation flow.
 Issues are launched inside a project and must belong to its repository.
 
 Health:
-`curl -H "Authorization: Bearer $FACTORY_API_TOKEN" https://factory.warias.app/health`.
-The factory API requires the bearer token on every route.
+
+```bash
+# Local Docker Compose (FACTORY_HOST_PORT from .env)
+curl -H "Authorization: Bearer $FACTORY_API_TOKEN" \
+  "http://127.0.0.1:${FACTORY_HOST_PORT:-3000}/health"
+
+# Kubernetes: the factory is internal, so port-forward it
+kubectl -n software-factory port-forward svc/factory 3000:3000
+curl -H "Authorization: Bearer $FACTORY_API_TOKEN" http://127.0.0.1:3000/health
+```
+
+The factory API requires the bearer token on every route and is not exposed by
+the production Ingress.
 
 PR activity is event-driven through a **GitHub App**. Configure the App's
 webhook once (not per repository):
@@ -79,6 +90,25 @@ development without a public URL, set `FACTORY_PR_POLLING=true` as a fallback.
 
 Your local OpenCode is never touched. The factory runs its own OpenCode
 container on an internal port, with its own config and data volume.
+
+## Production on k3s
+
+The `charts/software-factory` Helm chart deploys PostgreSQL, the isolated
+OpenCode runtime, the factory orchestrator and the Next.js webapp into the
+`software-factory` namespace. Only the webapp is exposed, through an HTTPS
+Ingress issued by cert-manager/Let's Encrypt; the GitHub webhook also enters
+through the webapp. Secrets are sealed with Sealed Secrets and stored as
+Kubernetes Secrets in the cluster; no plaintext secret is mounted or baked into
+an image. The sealed secret is generated locally from `.env` on every deploy
+and is gitignored.
+
+```bash
+./scripts/install-sealed-secrets.sh   # once per cluster
+./scripts/deploy-remote-k3s.sh <REMOTE_USER> <REMOTE_HOST>
+```
+
+See [Kubernetes / k3s](docs/kubernetes.md) for prerequisites, DNS, the full
+secret list and troubleshooting.
 
 ## Documentation
 

@@ -203,7 +203,10 @@ user. Runs are launched with a `projectId`; the issue URL must belong to that
 project's repository.
 
 ```bash
-curl -s -X POST https://factory.warias.app/api/projects \
+# The factory API is internal in the Kubernetes deployment; port-forward it.
+kubectl -n software-factory port-forward svc/factory 3000:3000
+
+curl -s -X POST http://127.0.0.1:3000/api/projects \
   -H "Authorization: Bearer $FACTORY_API_TOKEN" \
   -H "X-Factory-User-Id: usr_..." \
   -H 'Content-Type: application/json' \

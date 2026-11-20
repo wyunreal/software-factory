@@ -1,0 +1,35 @@
+{{- if .Values.postgres.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "software-factory.fullname" . }}-postgres
+  labels:
+    {{- include "software-factory.componentLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.postgres.persistence.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.postgres.persistence.size | quote }}
+  {{- if .Values.postgres.persistence.storageClass }}
+  storageClassName: {{ .Values.postgres.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}
+---
+{{- if .Values.data.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "software-factory.fullname" . }}-data
+  labels:
+    {{- include "software-factory.componentLabels" (dict "root" . "component" "data") | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.data.persistence.accessMode | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.data.persistence.size | quote }}
+  {{- if .Values.data.persistence.storageClass }}
+  storageClassName: {{ .Values.data.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

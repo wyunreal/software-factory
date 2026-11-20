@@ -110,9 +110,12 @@ without secrets and add stronger sandboxing.
 
 ## Exposure
 
-- The webapp is public at `https://web.factory.warias.app`; the factory API is
-  public at `https://factory.warias.app` but requires
-  `Authorization: Bearer $FACTORY_API_TOKEN` on every route.
+- The webapp is public at `https://web.factory.warias.app` and is the only
+  public entry point; the GitHub webhook is served by the webapp at
+  `/api/github/webhook`. The factory API, OpenCode runtime and PostgreSQL are
+  ClusterIP-only in the Kubernetes deployment. The factory API still requires
+  `Authorization: Bearer $FACTORY_API_TOKEN` on every route; use a
+  `kubectl port-forward` for direct access.
 - OpenCode port `4096` is not published.
 - `NEXTAUTH_URL` and `WEB_PUBLIC_ORIGIN` point to the public HTTPS webapp;
   `WEB_COOKIE_SECURE=true` and `AUTH_TRUST_HOST=true` are required behind the

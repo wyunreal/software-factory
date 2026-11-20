@@ -73,6 +73,12 @@ web_modules/
 # Local host-development data directory (compose.dev.yaml)
 .factory-dev/
 
+# Kubernetes deployment artifacts (images are transferred to the k3s host)
+software-factory*-image-*.tar.gz
+charts/software-factory/secrets.yaml
+# Generated locally by the deploy script from .env; never commit it.
+charts/software-factory/sealed-secret.yaml
+
 # Project-local OpenCode skills/agents: kept out of the public repository.
 .opencode/
 

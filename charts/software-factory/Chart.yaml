@@ -1,0 +1,6 @@
+apiVersion: v2
+name: software-factory
+description: Software Factory stack (webapp, orchestrator, OpenCode runtime, PostgreSQL)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

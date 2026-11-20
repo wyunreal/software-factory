@@ -1,0 +1,113 @@
+{{- $secret := include "software-factory.secretName" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "software-factory.fullname" . }}-opencode
+  labels:
+    {{- include "software-factory.componentLabels" (dict "root" . "component" "opencode") | nindent 4 }}
+spec:
+  replicas: {{ .Values.opencode.replicaCount }}
+  strategy:
+    # The OpenCode runtime shares the data volume with the factory worker.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "software-factory.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: opencode
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "software-factory.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: opencode
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- toYaml .Values.opencode.podSecurityContext | nindent 8 }}
+      containers:
+        - name: opencode
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/opencode-entrypoint.sh"]
+          securityContext:
+            {{- toYaml .Values.opencode.securityContext | nindent 12 }}
+          workingDir: /data
+          ports:
+            - name: http
+              containerPort: {{ .Values.opencode.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "software-factory.fullname" . }}-config
+          env:
+            - name: OPENCODE_PORT
+              value: {{ .Values.opencode.port | quote }}
+            - name: HOME
+              value: /data/opencode/home
+            - name: XDG_CONFIG_HOME
+              value: /config
+            - name: XDG_DATA_HOME
+              value: /data/opencode/data
+            - name: XDG_CACHE_HOME
+              value: /data/opencode/cache
+            - name: XDG_STATE_HOME
+              value: /data/opencode/state
+            {{- include "software-factory.secretEnv" (dict "name" "OPENCODE_SERVER_PASSWORD" "secretName" $secret) | nindent 12 }}
+            {{- include "software-factory.secretEnv" (dict "name" "OLLAMA_API_KEY" "secretName" $secret "optional" true) | nindent 12 }}
+            {{- include "software-factory.secretEnv" (dict "name" "ANTHROPIC_API_KEY" "secretName" $secret "optional" true) | nindent 12 }}
+            {{- include "software-factory.secretEnv" (dict "name" "OPENAI_API_KEY" "secretName" $secret "optional" true) | nindent 12 }}
+            {{- include "software-factory.secretEnv" (dict "name" "OPENROUTER_API_KEY" "secretName" $secret "optional" true) | nindent 12 }}
+            {{- include "software-factory.secretEnv" (dict "name" "GOOGLE_GENERATIVE_AI_API_KEY" "secretName" $secret "optional" true) | nindent 12 }}
+            {{- include "software-factory.secretEnv" (dict "name" "MISTRAL_API_KEY" "secretName" $secret "optional" true) | nindent 12 }}
+            {{- include "software-factory.secretEnv" (dict "name" "GROQ_API_KEY" "secretName" $secret "optional" true) | nindent 12 }}
+            {{- include "software-factory.secretEnv" (dict "name" "DEEPSEEK_API_KEY" "secretName" $secret "optional" true) | nindent 12 }}
+            {{- include "software-factory.secretEnv" (dict "name" "XAI_API_KEY" "secretName" $secret "optional" true) | nindent 12 }}
+            {{- include "software-factory.secretEnv" (dict "name" "AZURE_OPENAI_API_KEY" "secretName" $secret "optional" true) | nindent 12 }}
+          startupProbe:
+            tcpSocket:
+              port: http
+            failureThreshold: 60
+            periodSeconds: 5
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'curl -fsS -u "$OPENCODE_SERVER_USERNAME:$OPENCODE_SERVER_PASSWORD" http://127.0.0.1:{{ .Values.opencode.port }}/api/info >/dev/null'
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.opencode.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          {{- if .Values.data.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "software-factory.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

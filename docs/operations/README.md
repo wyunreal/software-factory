@@ -73,7 +73,12 @@ Agents communicate through artifacts, not only conversation.
 
 Every route requires `Authorization: Bearer $FACTORY_API_TOKEN`, including
 `/`, `/health` and `/api/*`. The webapp adds it server-side; the browser never
-sees it.
+sees it. In the Kubernetes deployment the factory is ClusterIP-only, so use a
+port-forward for direct API calls:
+
+```bash
+kubectl -n software-factory port-forward svc/factory 3000:3000
+```
 
 Run data is scoped per user. `/api/projects`, `/api/runs` and `/api/runs/:id`
 also require `X-Factory-User-Id: <user id>`; the webapp sets it from the NextAuth
@@ -94,7 +99,7 @@ another user is reported as `404`.
 | POST | `/api/tick` | force a trigger scan and a worker cycle |
 
 ```bash
-curl -s -X POST https://factory.warias.app/api/projects \
+curl -s -X POST http://127.0.0.1:3000/api/projects \
   -H "Authorization: Bearer $FACTORY_API_TOKEN" \
   -H "X-Factory-User-Id: usr_..." \
   -H 'Content-Type: application/json' \
@@ -106,7 +111,7 @@ with `code: "github_app_not_installed"`. The webapp uses this to show the
 installation link; the user does not configure a webhook.
 
 ```bash
-curl -s -X POST https://factory.warias.app/api/runs \
+curl -s -X POST http://127.0.0.1:3000/api/runs \
   -H "Authorization: Bearer $FACTORY_API_TOKEN" \
   -H "X-Factory-User-Id: usr_..." \
   -H 'Content-Type: application/json' \

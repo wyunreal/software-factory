@@ -1,0 +1,5 @@
+# These files are local-only. The deploy script regenerates
+# sealed-secret.yaml from .env on every run; never commit either file.
+secrets.yaml
+sealed-secret.yaml
+*.tar.gz

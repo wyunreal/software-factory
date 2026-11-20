@@ -1,0 +1,6 @@
+.git
+.gitignore
+.helmignore
+sealed-secret.yaml
+secrets.yaml
+*.tar.gz

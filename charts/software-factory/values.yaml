@@ -1,0 +1,172 @@
+# Default values for software-factory.
+#
+# The chart is meant to be installed in the dedicated namespace
+# `software-factory`. Service names (postgres, opencode, factory, web) are
+# fixed so the application environment matches docker compose.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Shared image for the orchestrator and the isolated OpenCode runtime.
+image:
+  repository: software-factory
+  tag: ""
+  pullPolicy: IfNotPresent
+
+factory:
+  replicaCount: 1
+  port: 3000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 2Gi
+  podSecurityContext: {}
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+opencode:
+  replicaCount: 1
+  port: 4096
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 6Gi
+  podSecurityContext: {}
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+web:
+  image:
+    repository: software-factory-web
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+postgres:
+  image:
+    repository: postgres
+    tag: "17-alpine"
+    pullPolicy: IfNotPresent
+  port: 5432
+  auth:
+    # Non-secret database identity. The password is read from the existing
+    # Secret key POSTGRES_PASSWORD.
+    username: factory
+    database: factory
+  persistence:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 2Gi
+
+# Repositories, worktrees and OpenCode state. This volume is mounted at /data
+# by both the factory and the OpenCode runtime; they must run on the same node
+# (the local-path storage class is node-local anyway).
+data:
+  persistence:
+    enabled: true
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    storageClass: ""
+
+secrets:
+  # Name of the Kubernetes Secret created by the Sealed Secrets controller.
+  # Plaintext secrets never enter the chart or the Helm release. The deploy
+  # script regenerates the local, gitignored sealed-secret.yaml from .env and
+  # applies it before Helm.
+  existingSecret: software-factory-secrets
+
+# Environment variables shared by the workloads through a ConfigMap. Only
+# non-sensitive values belong here; all credentials come from the Secret.
+config:
+  # Service discovery in the dedicated namespace.
+  FACTORY_OPENCODE_URL: http://opencode:4096
+  FACTORY_API_URL: http://factory:3000
+  FACTORY_DATA_DIR: /data
+  OPENCODE_SERVER_USERNAME: opencode
+  LOG_LEVEL: info
+
+  # Factory workflow.
+  FACTORY_MODEL: ollama-cloud/deepseek-v4.1-flash:1017
+  FACTORY_DELIVERY_MODE: github
+  FACTORY_PR_POLLING: "false"
+  FACTORY_PR_DRAFT: "false"
+  FACTORY_AUTO_MERGE: "false"
+  FACTORY_MERGE_METHOD: squash
+  FACTORY_REWORK_ON_CHANGES_REQUESTED: "true"
+  FACTORY_TRIAGE_PR_COMMENTS: "true"
+  FACTORY_FEEDBACK_USERS: ""
+  FACTORY_MAX_REWORK: "3"
+  FACTORY_POLL_INTERVAL_MS: "15000"
+  FACTORY_WORKER_INTERVAL_MS: "5000"
+  FACTORY_STEP_TIMEOUT_MS: "3600000"
+  FACTORY_TEST_TIMEOUT_MS: "1200000"
+  FACTORY_OPENCODE_STARTUP_TIMEOUT_MS: "90000"
+  FACTORY_SETUP_CMD: ""
+  FACTORY_TEST_CMD: ""
+  FACTORY_AUTO_APPROVE_PERMISSIONS: "true"
+  FACTORY_LABEL_IN_PROGRESS: factory:in-progress
+  FACTORY_LABEL_IN_REVIEW: factory:in-review
+  FACTORY_LABEL_BLOCKED: factory:blocked
+  FACTORY_LABEL_READY: ""
+  FACTORY_SKIP_LABELS: factory:skip
+  FACTORY_GIT_AUTHOR_NAME: ""
+  FACTORY_GIT_AUTHOR_EMAIL: ""
+
+  # Webapp / NextAuth. The webapp is the only public workload.
+  # Keep both URLs in sync with ingress.host below.
+  WEB_PUBLIC_ORIGIN: https://web.factory.warias.app
+  NEXTAUTH_URL: https://web.factory.warias.app
+  AUTH_TRUST_HOST: "true"
+  WEB_COOKIE_SECURE: "true"
+  WEB_SESSION_TTL_HOURS: "168"
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Serve the webapp only on the TLS entrypoint. Remove this annotation if
+    # you need an HTTP fallback during certificate troubleshooting.
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+  # Only the webapp is exposed outside the cluster. The GitHub webhook also
+  # enters through this host (/api/github/webhook); the factory API, OpenCode
+  # and PostgreSQL stay ClusterIP-only.
+  host: web.factory.warias.app
+  tlsSecretName: software-factory-web-tls
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

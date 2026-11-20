@@ -8,6 +8,9 @@ dist
 .env
 .env.*
 !.env.example
+charts/software-factory/secrets.yaml
+charts/software-factory/sealed-secret.yaml
+*.tar.gz
 *.pem
 *.key
 *.p12

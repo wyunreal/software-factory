@@ -1,0 +1,24 @@
+Software Factory has been deployed to namespace {{ .Release.Namespace }}.
+
+{{- if .Values.ingress.enabled }}
+
+Webapp (HTTPS): https://{{ .Values.ingress.host }}
+GitHub webhook: https://{{ .Values.ingress.host }}/api/github/webhook
+{{- end }}
+
+Only the webapp is exposed. The factory API, OpenCode runtime and PostgreSQL
+are ClusterIP services and are not reachable from outside the cluster.
+
+Check the rollout:
+
+  kubectl -n {{ .Release.Namespace }} get pods,svc,ingress,certificate
+
+Follow the logs:
+
+  kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "software-factory.fullname" . }}-factory
+  kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "software-factory.fullname" . }}-opencode
+  kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "software-factory.fullname" . }}-web
+
+The TLS certificate is issued by cert-manager with the ClusterIssuer
+letsencrypt-prod (DNS-01 via the Porkbun webhook). The DNS A record for
+{{ .Values.ingress.host }} must point at the Traefik address of the cluster.
