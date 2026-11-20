@@ -121,9 +121,15 @@ config:
   # Factory workflow.
   FACTORY_MODEL: ollama-cloud/deepseek-v4.1-flash:1017
   FACTORY_DELIVERY_MODE: github
-  FACTORY_PR_POLLING: "false"
+  # LAN-only deployments cannot receive GitHub webhooks (the A record points at
+  # a private address). Poll PR state, reviews, comments and merges instead.
+  # Switch back to "false" once the webapp is publicly reachable and webhook
+  # deliveries succeed.
+  FACTORY_PR_POLLING: "true"
   FACTORY_PR_DRAFT: "false"
-  FACTORY_AUTO_MERGE: "false"
+  # Opt-in auto-merge only after a real human APPROVED review. Keep this in
+  # sync with the GitHub App review policy.
+  FACTORY_AUTO_MERGE: "true"
   FACTORY_MERGE_METHOD: squash
   FACTORY_REWORK_ON_CHANGES_REQUESTED: "true"
   FACTORY_TRIAGE_PR_COMMENTS: "true"
