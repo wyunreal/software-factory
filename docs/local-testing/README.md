@@ -132,13 +132,29 @@ WEB_AUTH_SECRET="$(openssl rand -hex 32)" \
 NEXTAUTH_URL=http://localhost:8080 \
 FACTORY_API_URL=http://127.0.0.1:13000 \
 FACTORY_API_TOKEN=el-mismo-valor-que-en-el-factory \
+GITHUB_APP_SLUG=tu-app-slug \
+GITHUB_APP_WEBHOOK_SECRET=el-secreto-de-la-app \
 npm run dev
 ```
 
-It listens on <http://localhost:8080>. Create an account at `/register` with
-email/password or OAuth, if you set provider credentials. The webapp proxies
-`/api/*` server-side and adds `FACTORY_API_TOKEN`; the factory API requires it on
-every route.
+It listens on <http://localhost:8080>. Create an account at `/register`, then
+create a project with a GitHub repository and launch issues inside it. The
+webapp proxies `/api/*` server-side and adds `FACTORY_API_TOKEN`; the factory API
+requires it on every route.
+
+The factory host process also needs `GITHUB_APP_ID` and
+`GITHUB_APP_PRIVATE_KEY` (or `_PATH`) to resolve installation tokens.
+
+GitHub events:
+
+- In production the App webhook is configured once at
+  `https://web.factory.warias.app/api/github/webhook`; no per-repo webhook is
+  needed. Users install the App only on the repositories they choose.
+- For local testing, use a tunnel such as `cloudflared` or `smee.io` and set the
+  App webhook URL to the tunnel URL. The Setup URL can point to
+  `https://<tunnel>/api/github/install/callback`.
+- Without a public URL, set `FACTORY_PR_POLLING=true` to use the old periodic
+  scan as a fallback. The default is event-driven (`false`).
 
 Webapp tests:
 
@@ -161,14 +177,17 @@ volume. It does not touch your local OpenCode.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | `OpenCode ... 401` | password mismatch | use the same `.env`; recreate services |
-| `GitHub ... 401` | invalid token | regenerate the PAT |
-| `GitHub ... 403` | missing permissions | grant Issues, Contents, Pull requests |
-| `GitHub ... 404` | bad repo or no access | check repo/issue URL |
-| `Repository mismatch` | issue and repo differ | use the issue's repo |
+| `GitHub App ... 401` | invalid App ID/private key | check `GITHUB_APP_ID` and private key |
+| `GitHub App ... 403` | App lacks permissions | review App permissions |
+| `GitHub App ... 404` | App not installed on repo | install it from the webapp |
+| `Repository mismatch` | issue and project differ | use the project's repo |
 | `Issue #N is closed` | issue closed | use an open issue |
 | Webapp 502 | factory down | `docker compose ps`; check logs |
 | Webapp 500 / `NO_SECRET` | `WEB_AUTH_SECRET` empty | set it in `.env`; restart web |
-| Webapp 500 after login | `NEXTAUTH_URL` empty | set `NEXTAUTH_URL=http://localhost:8080` |
+| Webapp 500 after login | `NEXTAUTH_URL` empty | set `NEXTAUTH_URL=https://web.factory.warias.app` |
+| Webhook `401` | secret/signature mismatch | use the same `GITHUB_APP_WEBHOOK_SECRET` in `.env` and the GitHub App |
+| Webhook `502` | factory down | `docker compose ps`; check factory logs |
+| PR events not processed | polling off and no App webhook | configure the App webhook or set `FACTORY_PR_POLLING=true` |
 | `redirect_uri_mismatch` | OAuth callback differs | register `${NEXTAUTH_URL}/api/auth/callback/<provider>` |
 | OAuth provider not listed | provider env incomplete | set `AUTH_<PROVIDER>_ID` and `_SECRET`; restart web |
 | Issue not processed | state label or `factory:skip` | check labels and `/api/runs` |

@@ -17,6 +17,7 @@ function makeConfig(dataDir: string): FactoryConfig {
     apiToken: "test-api-token-123456",
     dataDir,
     pollIntervalMs: 1000,
+    prPolling: false,
     workerIntervalMs: 1000,
     stepTimeoutMs: 5000,
     testTimeoutMs: 5000,
@@ -39,7 +40,9 @@ function makeConfig(dataDir: string): FactoryConfig {
       startupTimeoutMs: 1000,
     },
     github: {
-      token: "token",
+      appId: "123456",
+      privateKey: "test-key",
+      slug: "software-factory-test",
       apiUrl: "https://api.github.com",
       draft: false,
       labels: {
@@ -53,7 +56,6 @@ function makeConfig(dataDir: string): FactoryConfig {
     git: {
       authorName: "Factory",
       authorEmail: "factory@example.com",
-      token: null,
     },
   };
 }
@@ -71,6 +73,7 @@ function makeRun(repoUrl: string): Run {
   return {
     id: "1234abcd-0000-0000-0000-000000000000",
     ownerUserId: "usr_test",
+    projectId: "proj_test",
     ticket: {
       cardId: "1",
       number: 1,
@@ -111,7 +114,15 @@ describe("git workspace per-repo", () => {
     run(["git", "add", "-A"], origin);
     run(["git", "commit", "-q", "-m", "initial"], origin);
 
-    const workspace = new GitWorkspace(makeConfig(root), new Logger({}, "error"));
+    const workspace = new GitWorkspace(
+      makeConfig(root),
+      {
+        validate: async () => undefined,
+        installationIdForRepository: async () => null,
+        tokenForRepository: async () => "test-token",
+      },
+      new Logger({}, "error"),
+    );
     const prepared = await workspace.prepare(makeRun(origin));
 
     expect(prepared.directory).toContain("/worktrees/");

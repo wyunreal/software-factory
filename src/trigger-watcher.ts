@@ -41,6 +41,7 @@ export class TriggerWatcher {
 
   start(): void {
     this.stopped = false;
+    if (!this.config.prPolling) return;
     this.syncTimer = setInterval(() => {
       void this.syncNow();
     }, this.config.pollIntervalMs);
@@ -59,6 +60,7 @@ export class TriggerWatcher {
       startedAt: this.startedAt,
       lastSyncAt: this.lastSyncAt,
       syncing: this.syncing,
+      polling: this.config.prPolling,
       stats: this.stats,
     };
   }

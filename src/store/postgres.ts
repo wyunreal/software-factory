@@ -1,9 +1,11 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { Pool } from "pg";
 import type { RunStore, RunPatch, CreateRunOptions } from "../ports.ts";
 import type {
   Artifact,
   EnqueueJobInput,
+  Project,
   Run,
   RunEvent,
   RunJob,
@@ -34,11 +36,135 @@ export class PostgresRunStore implements RunStore {
       "utf8",
     );
     await this.pool.query(schema);
+    await this.backfillProjects();
     this.logger.info("database schema ready");
   }
 
   async close(): Promise<void> {
     await this.pool.end();
+  }
+
+  async createProject(input: {
+    ownerUserId: string;
+    name: string;
+    repo: string;
+    repoUrl: string;
+  }): Promise<Project | null> {
+    const id = `proj_${crypto.randomUUID()}`;
+    const { rows } = await this.pool.query<Row>(
+      `INSERT INTO projects (id, owner_user_id, name, repo, repo_url)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT DO NOTHING
+       RETURNING *`,
+      [
+        id,
+        input.ownerUserId,
+        input.name,
+        input.repo.toLowerCase(),
+        input.repoUrl,
+      ],
+    );
+    return rows[0] ? mapProject(rows[0]) : null;
+  }
+
+  async listProjectsForUser(ownerUserId: string): Promise<Project[]> {
+    const { rows } = await this.pool.query<Row>(
+      `SELECT * FROM projects
+        WHERE owner_user_id = $1
+        ORDER BY created_at ASC`,
+      [ownerUserId],
+    );
+    return rows.map(mapProject);
+  }
+
+  async getProjectForUser(
+    id: string,
+    ownerUserId: string,
+  ): Promise<Project | null> {
+    const { rows } = await this.pool.query<Row>(
+      `SELECT * FROM projects
+        WHERE id = $1 AND owner_user_id = $2
+        LIMIT 1`,
+      [id, ownerUserId],
+    );
+    return rows[0] ? mapProject(rows[0]) : null;
+  }
+
+  async listHumanReviewRunsForRepository(repo: string): Promise<Run[]> {
+    const { rows } = await this.pool.query<Row>(
+      `SELECT r.* FROM runs r
+        JOIN projects p
+          ON p.id = r.project_id AND p.owner_user_id = r.owner_user_id
+       WHERE lower(p.repo) = lower($1)
+         AND r.state = 'HUMAN_REVIEW'
+         AND r.finished_at IS NULL
+       ORDER BY r.created_at ASC`,
+      [repo],
+    );
+    return rows.map(mapRun);
+  }
+
+  /**
+   * Existing runs predate the projects concept. Group them by owner and
+   * repository so they remain visible after the upgrade.
+   */
+  private async backfillProjects(): Promise<void> {
+    const { rows } = await this.pool.query<{
+      owner_user_id: string;
+      repo_url: string;
+    }>(
+      `SELECT DISTINCT owner_user_id, repo_url
+         FROM runs
+        WHERE project_id IS NULL
+          AND owner_user_id IS NOT NULL
+          AND repo_url <> ''`,
+    );
+
+    for (const row of rows) {
+      const repo = repositoryFromUrl(row.repo_url);
+      if (!repo) continue;
+
+      const existing = await this.pool.query<{ id: string }>(
+        `SELECT id FROM projects
+          WHERE owner_user_id = $1 AND lower(repo) = lower($2)
+          LIMIT 1`,
+        [row.owner_user_id, repo],
+      );
+      let projectId = existing.rows[0]?.id;
+      if (!projectId) {
+        const id = `proj_${createHash("sha1")
+          .update(`${row.owner_user_id}|${repo.toLowerCase()}`)
+          .digest("hex")
+          .slice(0, 32)}`;
+        await this.pool.query(
+          `INSERT INTO projects (id, owner_user_id, name, repo, repo_url)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT DO NOTHING`,
+          [
+            id,
+            row.owner_user_id,
+            repo.toLowerCase(),
+            repo.toLowerCase(),
+            `https://github.com/${repo}.git`,
+          ],
+        );
+        const created = await this.pool.query<{ id: string }>(
+          `SELECT id FROM projects
+            WHERE owner_user_id = $1 AND lower(repo) = lower($2)
+            LIMIT 1`,
+          [row.owner_user_id, repo],
+        );
+        projectId = created.rows[0]?.id;
+      }
+
+      if (projectId) {
+        await this.pool.query(
+          `UPDATE runs SET project_id = $1
+            WHERE owner_user_id = $2 AND repo_url = $3 AND project_id IS NULL`,
+          [projectId, row.owner_user_id, row.repo_url],
+        );
+      }
+    }
   }
 
   async createRun(
@@ -48,18 +174,19 @@ export class PostgresRunStore implements RunStore {
     const id = crypto.randomUUID();
     const { rows } = await this.pool.query<Row>(
       `INSERT INTO runs (
-        id, owner_user_id, ticket_card_id, ticket_ref, ticket_title, ticket_description,
+        id, owner_user_id, project_id, ticket_card_id, ticket_ref, ticket_title, ticket_description,
         ticket_url, ticket_labels, ticket_criteria, state,
         repo_url, base_branch, setup_command, test_command
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, 'CLAIMED',
-        $10, $11, $12, $13
+        $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, 'CLAIMED',
+        $11, $12, $13, $14
       )
       ON CONFLICT DO NOTHING
       RETURNING *`,
       [
         id,
         options.ownerUserId,
+        options.projectId,
         ticket.cardId,
         ticket.ref,
         ticket.title,
@@ -338,6 +465,17 @@ export class PostgresRunStore implements RunStore {
   }
 }
 
+function mapProject(row: Row): Project {
+  return {
+    id: String(row.id),
+    ownerUserId: String(row.owner_user_id),
+    name: String(row.name),
+    repo: String(row.repo),
+    repoUrl: String(row.repo_url),
+    createdAt: iso(row.created_at),
+  };
+}
+
 function mapRun(row: Row): Run {
   const repoUrl = String(row.repo_url ?? "");
   const ticketRef = String(row.ticket_ref);
@@ -345,6 +483,7 @@ function mapRun(row: Row): Run {
   return {
     id: String(row.id),
     ownerUserId: nullableString(row.owner_user_id),
+    projectId: nullableString(row.project_id),
     ticket: {
       cardId: String(row.ticket_card_id),
       ref: ticketRef,
@@ -373,8 +512,7 @@ function mapRun(row: Row): Run {
   };
 }
 
-function mapJob(row: Row): RunJob {
-  return {
+function mapJob(row: Row): RunJob {  return {
     id: String(row.id),
     kind: String(row.kind) as RunJobKind,
     runId: String(row.run_id),

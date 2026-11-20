@@ -3,6 +3,7 @@ import type {
   Artifact,
   CommitResult,
   EnqueueJobInput,
+  Project,
   Run,
   RunEvent,
   RunJob,
@@ -26,6 +27,7 @@ export type RunPatch = {
 
 export type CreateRunOptions = {
   ownerUserId: string;
+  projectId: string;
   repoUrl: string;
   baseBranch: string;
   setupCommand?: string | null;
@@ -37,6 +39,15 @@ export interface RunStore {
   getRun(id: string): Promise<Run | null>;
   listRunsForUser(ownerUserId: string, limit: number): Promise<Run[]>;
   listRunsByState(state: RunState): Promise<Run[]>;
+  listHumanReviewRunsForRepository(repo: string): Promise<Run[]>;
+  createProject(input: {
+    ownerUserId: string;
+    name: string;
+    repo: string;
+    repoUrl: string;
+  }): Promise<Project | null>;
+  listProjectsForUser(ownerUserId: string): Promise<Project[]>;
+  getProjectForUser(id: string, ownerUserId: string): Promise<Project | null>;
   ping(): Promise<void>;
   claimNext(): Promise<Run | null>;
   updateRun(id: string, patch: RunPatch): Promise<Run>;
@@ -76,6 +87,12 @@ export interface BacklogPort {
   moveToReview(ticket: Ticket): Promise<void>;
   moveToBlocked(ticket: Ticket): Promise<void>;
   isDone(ticket: Ticket): Promise<boolean>;
+}
+
+export interface GitHubAuthPort {
+  validate(): Promise<void>;
+  installationIdForRepository(repository: string): Promise<number | null>;
+  tokenForRepository(repository: string): Promise<string>;
 }
 
 export type AgentRunRequest = {

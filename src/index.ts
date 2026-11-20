@@ -3,6 +3,7 @@ import { loadConfig, ConfigError } from "./config.ts";
 import { Logger, logLevelFromEnv, errorMessage } from "./logger.ts";
 import { PostgresRunStore } from "./store/postgres.ts";
 import { GitHubIssuesBacklog } from "./backlog/github.ts";
+import { GitHubAppAuth } from "./github-app.ts";
 import { OpencodeRuntime } from "./runtime/opencode.ts";
 import { GitWorkspace } from "./scm/git.ts";
 import { GitHubDelivery, LocalDelivery } from "./scm/github.ts";
@@ -63,14 +64,15 @@ async function main(): Promise<void> {
     );
   }
 
-  const backlog = new GitHubIssuesBacklog(config.github, logger);
-  await retry(5, 3_000, "GitHub Issues validation", () => backlog.validate());
+  const githubAuth = new GitHubAppAuth(config.github, logger);
+  const backlog = new GitHubIssuesBacklog(config.github, githubAuth, logger);
+  await retry(5, 3_000, "GitHub App validation", () => backlog.validate());
 
-  const workspace = new GitWorkspace(config, logger);
+  const workspace = new GitWorkspace(config, githubAuth, logger);
 
   const githubDelivery =
     config.deliveryMode === "github"
-      ? new GitHubDelivery(config.github, logger)
+      ? new GitHubDelivery(config.github, githubAuth, logger)
       : null;
   const delivery = githubDelivery ?? new LocalDelivery();
 
@@ -97,6 +99,7 @@ async function main(): Promise<void> {
   const server = await startApi({
     config,
     store,
+    githubAuth,
     watcher,
     worker,
     runtime,

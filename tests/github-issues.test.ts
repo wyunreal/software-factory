@@ -2,10 +2,13 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { GitHubIssuesBacklog } from "../src/backlog/github.ts";
 import type { GithubConfig } from "../src/config.ts";
 import type { Run, Ticket } from "../src/domain/types.ts";
+import type { GitHubAuthPort } from "../src/ports.ts";
 import { Logger } from "../src/logger.ts";
 
 const config: GithubConfig = {
-  token: "test-token",
+  appId: "123456",
+  privateKey: "test-key",
+  slug: "software-factory-test",
   apiUrl: "https://api.github.com",
   draft: false,
   labels: {
@@ -15,6 +18,15 @@ const config: GithubConfig = {
     ready: null,
     skip: ["factory:skip"],
   },
+};
+
+let validateCalls = 0;
+const auth: GitHubAuthPort = {
+  validate: async () => {
+    validateCalls += 1;
+  },
+  installationIdForRepository: async () => 1,
+  tokenForRepository: async () => "test-token",
 };
 
 const issues = [
@@ -112,16 +124,15 @@ afterAll(() => {
 });
 
 describe("GitHub Issues backlog adapter", () => {
-  test("validates the token against the authenticated user", async () => {
-    const backlog = new GitHubIssuesBacklog(config, new Logger({}, "error"));
+  test("validates the GitHub App credentials", async () => {
+    const before = validateCalls;
+    const backlog = new GitHubIssuesBacklog(config, auth, new Logger({}, "error"));
     await backlog.validate();
-    expect(
-      calls.some((call) => call.method === "GET" && call.path === "/user"),
-    ).toBe(true);
+    expect(validateCalls).toBe(before + 1);
   });
 
   test("fetches a ticket and creates the required labels", async () => {
-    const backlog = new GitHubIssuesBacklog(config, new Logger({}, "error"));
+    const backlog = new GitHubIssuesBacklog(config, auth, new Logger({}, "error"));
     const ticket = await backlog.getTicket("acme/app", 1);
     expect(ticket.ref).toBe("GH-1");
     expect(ticket.number).toBe(1);
@@ -138,7 +149,7 @@ describe("GitHub Issues backlog adapter", () => {
   });
 
   test("claims an issue with a label and a comment", async () => {
-    const backlog = new GitHubIssuesBacklog(config, new Logger({}, "error"));
+    const backlog = new GitHubIssuesBacklog(config, auth, new Logger({}, "error"));
     const ticket: Ticket = {
       cardId: "1001",
       number: 1,
@@ -168,7 +179,7 @@ describe("GitHub Issues backlog adapter", () => {
   });
 
   test("detects done issues", async () => {
-    const backlog = new GitHubIssuesBacklog(config, new Logger({}, "error"));
+    const backlog = new GitHubIssuesBacklog(config, auth, new Logger({}, "error"));
     const ticket: Ticket = {
       cardId: "1001",
       number: 1,

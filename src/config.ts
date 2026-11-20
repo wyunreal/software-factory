@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { ModelRef } from "./domain/types.ts";
 
 export type OpencodeConfig = {
@@ -18,7 +19,9 @@ export type GithubLabels = {
 };
 
 export type GithubConfig = {
-  token: string;
+  appId: string;
+  privateKey: string;
+  slug: string;
   apiUrl: string;
   draft: boolean;
   labels: GithubLabels;
@@ -27,7 +30,6 @@ export type GithubConfig = {
 export type GitConfig = {
   authorName: string;
   authorEmail: string;
-  token: string | null;
 };
 
 export type FactoryConfig = {
@@ -36,6 +38,7 @@ export type FactoryConfig = {
   dataDir: string;
   pollIntervalMs: number;
   workerIntervalMs: number;
+  prPolling: boolean;
   stepTimeoutMs: number;
   testTimeoutMs: number;
   maxRework: number;
@@ -141,6 +144,43 @@ function envList(
     .filter(Boolean);
 }
 
+function appPrivateKey(
+  env: Record<string, string | undefined>,
+  problems: string[],
+): string {
+  const inline = env.GITHUB_APP_PRIVATE_KEY?.trim();
+  if (inline) return inline.replace(/\\n/g, "\n");
+
+  const base64 = env.GITHUB_APP_PRIVATE_KEY_BASE64?.trim();
+  if (base64) {
+    try {
+      return Buffer.from(base64, "base64").toString("utf8");
+    } catch {
+      problems.push("GITHUB_APP_PRIVATE_KEY_BASE64 is not valid base64");
+      return "";
+    }
+  }
+
+  const path = env.GITHUB_APP_PRIVATE_KEY_PATH?.trim();
+  if (path) {
+    try {
+      return readFileSync(path, "utf8");
+    } catch (error) {
+      problems.push(
+        `GITHUB_APP_PRIVATE_KEY_PATH cannot be read: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return "";
+    }
+  }
+
+  problems.push(
+    "GITHUB_APP_PRIVATE_KEY, GITHUB_APP_PRIVATE_KEY_BASE64 or GITHUB_APP_PRIVATE_KEY_PATH is required",
+  );
+  return "";
+}
+
 export function repositoryFromUrl(repoUrl: string): string | null {
   const match = repoUrl.match(
     /github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i,
@@ -170,7 +210,9 @@ export function loadConfig(
     );
   }
 
-  const githubToken = required(env, "GITHUB_TOKEN", problems);
+  const githubAppId = required(env, "GITHUB_APP_ID", problems);
+  const githubAppSlug = required(env, "GITHUB_APP_SLUG", problems);
+  const githubPrivateKey = appPrivateKey(env, problems);
 
   let model: ModelRef | null = null;
   try {
@@ -194,6 +236,7 @@ export function loadConfig(
     dataDir: optional(env, "FACTORY_DATA_DIR") ?? "/data",
     pollIntervalMs: envNumber(env, "FACTORY_POLL_INTERVAL_MS", 15_000),
     workerIntervalMs: envNumber(env, "FACTORY_WORKER_INTERVAL_MS", 5_000),
+    prPolling: envBool(env, "FACTORY_PR_POLLING", false),
     stepTimeoutMs: envNumber(env, "FACTORY_STEP_TIMEOUT_MS", 30 * 60_000),
     testTimeoutMs: envNumber(env, "FACTORY_TEST_TIMEOUT_MS", 20 * 60_000),
     maxRework: envNumber(env, "FACTORY_MAX_REWORK", 3),
@@ -225,7 +268,9 @@ export function loadConfig(
       startupTimeoutMs: envNumber(env, "FACTORY_OPENCODE_STARTUP_TIMEOUT_MS", 90_000),
     },
     github: {
-      token: githubToken,
+      appId: githubAppId,
+      privateKey: githubPrivateKey,
+      slug: githubAppSlug,
       apiUrl: (optional(env, "GITHUB_API_URL") ?? "https://api.github.com").replace(
         /\/+$/,
         "",
@@ -241,10 +286,12 @@ export function loadConfig(
       },
     },
     git: {
-      authorName: optional(env, "FACTORY_GIT_AUTHOR_NAME") ?? "Software Factory",
+      authorName:
+        optional(env, "FACTORY_GIT_AUTHOR_NAME") ??
+        `${githubAppSlug}[bot]`,
       authorEmail:
-        optional(env, "FACTORY_GIT_AUTHOR_EMAIL") ?? "factory@localhost",
-      token: githubToken,
+        optional(env, "FACTORY_GIT_AUTHOR_EMAIL") ??
+        `${githubAppId}+${githubAppSlug}[bot]@users.noreply.github.com`,
     },
   };
 

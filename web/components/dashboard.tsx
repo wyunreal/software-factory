@@ -1,20 +1,44 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { signOutClient } from "@/lib/auth/client";
 import { ApiError, readJson } from "@/lib/http";
-import type { AuthUser, Run, RunResponse, RunsResponse } from "@/lib/types";
+import type {
+  AuthUser,
+  Project,
+  ProjectResponse,
+  ProjectsResponse,
+  Run,
+  RunResponse,
+  RunsResponse,
+} from "@/lib/types";
 
 const TERMINAL_STATES = new Set(["HUMAN_REVIEW", "DONE", "BLOCKED"]);
 
-export function Dashboard({ user }: { user: AuthUser }) {
+export function Dashboard({
+  user,
+  notice,
+  noticeError,
+}: {
+  user: AuthUser;
+  notice?: string;
+  noticeError?: string;
+}) {
   const [runs, setRuns] = useState<Run[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<Run | null>(null);
   const [message, setMessage] = useState<string>("");
   const [isError, setIsError] = useState(false);
+  const [projectMessage, setProjectMessage] = useState<string>(
+    noticeError ?? notice ?? "",
+  );
+  const [projectIsError, setProjectIsError] = useState(Boolean(noticeError));
   const [submitting, setSubmitting] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
   const [loadingRuns, setLoadingRuns] = useState(false);
+  const [loadingProjects, setLoadingProjects] = useState(false);
 
   const loadRuns = useCallback(async () => {
     setLoadingRuns(true);
@@ -30,9 +54,30 @@ export function Dashboard({ user }: { user: AuthUser }) {
     }
   }, []);
 
+  const loadProjects = useCallback(async () => {
+    setLoadingProjects(true);
+    try {
+      const response = await fetch("/api/projects", { cache: "no-store" });
+      const body = await readJson<ProjectsResponse>(response);
+      const next = body.data ?? [];
+      setProjects(next);
+      setSelectedProjectId((current) =>
+        next.some((project) => project.id === current)
+          ? current
+          : (next[0]?.id ?? ""),
+      );
+    } catch (error) {
+      setProjectMessage(errorText(error));
+      setProjectIsError(true);
+    } finally {
+      setLoadingProjects(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadRuns();
-  }, [loadRuns]);
+    void loadProjects();
+  }, [loadRuns, loadProjects]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -66,16 +111,77 @@ export function Dashboard({ user }: { user: AuthUser }) {
     };
   }, [selectedId]);
 
+  async function onCreateProject(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const name = String(data.get("name") ?? "").trim();
+    const repoUrl = String(data.get("repoUrl") ?? "").trim();
+    setProjectMessage("");
+    setProjectIsError(false);
+    setCreatingProject(true);
+
+    try {
+      const response = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, repoUrl }),
+      });
+      const body = await readJson<ProjectResponse>(response);
+      setProjects((current) => [...current, body.data]);
+      setSelectedProjectId(body.data.id);
+      setProjectMessage(`Proyecto creado: ${body.data.name}`);
+      form.reset();
+    } catch (error) {
+      const body = error instanceof ApiError ? error.body : null;
+      if (
+        error instanceof ApiError &&
+        error.status === 428 &&
+        isRecord(body) &&
+        body.code === "github_app_not_installed"
+      ) {
+        setProjectMessage(
+          "Instala la GitHub App en el repositorio para crear el proyecto…",
+        );
+        try {
+          const response = await fetch("/api/github/install/start", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name, repoUrl }),
+          });
+          const start = await readJson<{ installUrl: string }>(response);
+          window.location.assign(start.installUrl);
+          return;
+        } catch (installError) {
+          setProjectMessage(errorText(installError));
+          setProjectIsError(true);
+          setCreatingProject(false);
+          return;
+        }
+      }
+      setProjectMessage(errorText(error));
+      setProjectIsError(true);
+    } finally {
+      setCreatingProject(false);
+    }
+  }
+
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
     setMessage("");
     setIsError(false);
-    setSubmitting(true);
 
+    if (!selectedProjectId) {
+      setMessage("Crea un proyecto antes de lanzar un issue.");
+      setIsError(true);
+      return;
+    }
+
+    setSubmitting(true);
     const payload: Record<string, string> = {
-      repoUrl: String(data.get("repoUrl") ?? "").trim(),
+      projectId: selectedProjectId,
       issueUrl: String(data.get("issueUrl") ?? "").trim(),
       baseBranch: String(data.get("baseBranch") ?? "").trim() || "main",
     };
@@ -110,6 +216,12 @@ export function Dashboard({ user }: { user: AuthUser }) {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function projectName(run: Run): string {
+    return (
+      projects.find((project) => project.id === run.projectId)?.name ?? "—"
+    );
+  }
+
   async function logout() {
     try {
       await signOutClient();
@@ -118,6 +230,9 @@ export function Dashboard({ user }: { user: AuthUser }) {
     }
   }
 
+  const selectedProject =
+    projects.find((project) => project.id === selectedProjectId) ?? null;
+
   return (
     <>
       <header>
@@ -125,9 +240,10 @@ export function Dashboard({ user }: { user: AuthUser }) {
           <p className="eyebrow">AI Software Factory</p>
           <h1>Iniciar desarrollo de un issue</h1>
           <p className="muted">
-            El repo y el issue deben pertenecer al mismo repositorio. La factoría
-            crea un worktree aislado, ejecuta el squad y deja el resultado listo
-            para revisión.
+            Cada issue se lanza dentro de un proyecto. El issue debe pertenecer
+            al repositorio del proyecto seleccionado. La factoría crea un
+            worktree aislado, ejecuta el squad y deja el resultado listo para
+            revisión.
           </p>
         </div>
         <div className="header-actions">
@@ -143,7 +259,61 @@ export function Dashboard({ user }: { user: AuthUser }) {
 
       <main>
         <section className="card">
-          <form onSubmit={onSubmit}>
+          <div className="run-header">
+            <div>
+              <p className="eyebrow">Proyectos</p>
+              <h2>Tus proyectos</h2>
+            </div>
+            <button
+              className="ghost"
+              type="button"
+              onClick={() => void loadProjects()}
+              disabled={loadingProjects}
+            >
+              {loadingProjects ? "Cargando…" : "Refrescar"}
+            </button>
+          </div>
+
+          <div className="projects">
+            {projects.length === 0 ? (
+              <p className="muted">
+                Todavía no tienes proyectos. Crea uno con su repositorio para
+                poder lanzar issues.
+              </p>
+            ) : (
+              projects.map((project) => (
+                <div
+                  className={`project-row${
+                    project.id === selectedProjectId ? " selected" : ""
+                  }`}
+                  key={project.id}
+                >
+                  <span className="project-name">{project.name}</span>
+                  <span className="project-repo">{project.repo}</span>
+                  <button
+                    className="ghost"
+                    type="button"
+                    onClick={() => setSelectedProjectId(project.id)}
+                  >
+                    {project.id === selectedProjectId ? "Seleccionado" : "Usar"}
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+
+          <form className="project-form" onSubmit={onCreateProject}>
+            <label>
+              Nombre del proyecto
+              <input
+                name="name"
+                type="text"
+                maxLength={80}
+                placeholder="Mi producto"
+                autoComplete="off"
+                required
+              />
+            </label>
             <label>
               Repositorio
               <input
@@ -154,6 +324,49 @@ export function Dashboard({ user }: { user: AuthUser }) {
                 required
               />
             </label>
+            <button type="submit" disabled={creatingProject}>
+              {creatingProject ? "Creando…" : "Crear proyecto"}
+            </button>
+          </form>
+
+          {projectMessage ? (
+            <div
+              className={`message${projectIsError ? " error" : ""}`}
+              role="status"
+            >
+              {projectMessage}
+            </div>
+          ) : null}
+        </section>
+
+        <section className="card">
+          <form onSubmit={onSubmit}>
+            <label>
+              Proyecto
+              <select
+                name="projectId"
+                value={selectedProjectId}
+                onChange={(event) => setSelectedProjectId(event.target.value)}
+                required
+                disabled={projects.length === 0}
+              >
+                {projects.length === 0 ? (
+                  <option value="">Sin proyectos</option>
+                ) : null}
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name} — {project.repo}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {selectedProject ? (
+              <p className="muted">
+                Los issues deben pertenecer a{" "}
+                <strong>{selectedProject.repo}</strong>.
+              </p>
+            ) : null}
 
             <label>
               URL del issue
@@ -191,7 +404,10 @@ export function Dashboard({ user }: { user: AuthUser }) {
               </label>
             </details>
 
-            <button type="submit" disabled={submitting}>
+            <button
+              type="submit"
+              disabled={submitting || projects.length === 0}
+            >
               {submitting ? "Arrancando…" : "Iniciar desarrollo"}
             </button>
           </form>
@@ -203,7 +419,15 @@ export function Dashboard({ user }: { user: AuthUser }) {
           ) : null}
         </section>
 
-        {selectedRun ? <RunPanel run={selectedRun} /> : null}
+        {selectedRun ? (
+          <RunPanel
+            run={selectedRun}
+            project={
+              projects.find((project) => project.id === selectedRun.projectId) ??
+              null
+            }
+          />
+        ) : null}
 
         <section className="card">
           <div className="run-header">
@@ -229,7 +453,12 @@ export function Dashboard({ user }: { user: AuthUser }) {
                   onClick={() => selectRun(run.id)}
                 >
                   <span className="ref">{run.ticket?.ref ?? ""}</span>
-                  <span className="title">{run.ticket?.title ?? ""}</span>
+                  <span className="title">
+                    {run.ticket?.title ?? ""}
+                    <small className="project-name">
+                      {projectName(run)}
+                    </small>
+                  </span>
                   <span className="state">{run.state}</span>
                 </button>
               ))
@@ -241,7 +470,7 @@ export function Dashboard({ user }: { user: AuthUser }) {
   );
 }
 
-function RunPanel({ run }: { run: Run }) {
+function RunPanel({ run, project }: { run: Run; project: Project | null }) {
   return (
     <section className="card">
       <div className="run-header">
@@ -258,8 +487,12 @@ function RunPanel({ run }: { run: Run }) {
           <dd>{run.id}</dd>
         </div>
         <div>
+          <dt>Proyecto</dt>
+          <dd>{project?.name ?? "—"}</dd>
+        </div>
+        <div>
           <dt>Repo</dt>
-          <dd>{run.repoUrl || "—"}</dd>
+          <dd>{project?.repoUrl || run.repoUrl || "—"}</dd>
         </div>
         <div>
           <dt>Rama</dt>
@@ -297,4 +530,8 @@ function RunPanel({ run }: { run: Run }) {
 function errorText(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

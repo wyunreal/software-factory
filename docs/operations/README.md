@@ -75,33 +75,56 @@ Every route requires `Authorization: Bearer $FACTORY_API_TOKEN`, including
 `/`, `/health` and `/api/*`. The webapp adds it server-side; the browser never
 sees it.
 
-Run data is scoped per user. `/api/runs` and `/api/runs/:id` also require
-`X-Factory-User-Id: <user id>`; the webapp sets it from the NextAuth session.
-Direct callers must pass it for those routes. A run owned by another user is
-reported as `404`.
+Run data is scoped per user. `/api/projects`, `/api/runs` and `/api/runs/:id`
+also require `X-Factory-User-Id: <user id>`; the webapp sets it from the NextAuth
+session. Direct callers must pass it for those routes. A project or run owned by
+another user is reported as `404`.
 
 | Method | Path | Description |
 | --- | --- | --- |
 | GET | `/health` | PostgreSQL, OpenCode, trigger watcher and worker |
 | GET | `/api/status` | trigger watcher and worker statistics |
-| GET | `/api/runs` | latest runs (`?limit=`) |
+| GET | `/api/projects` | projects owned by the user |
+| POST | `/api/projects` | create a project (`name`, `repoUrl`) |
+| GET | `/api/runs` | latest runs owned by the user (`?limit=`) |
 | GET | `/api/runs/:id` | run + artifacts + events |
-| POST | `/api/runs` | create a run and enqueue its start job |
+| POST | `/api/runs` | create a run inside a project and enqueue its start job |
+| POST | `/api/github/installations` | internal: create a project after GitHub App installation |
+| POST | `/api/github/events` | internal intake for verified GitHub events |
 | POST | `/api/tick` | force a trigger scan and a worker cycle |
 
 ```bash
-curl -s -X POST http://127.0.0.1:13000/api/runs \
+curl -s -X POST https://factory.warias.app/api/projects \
+  -H "Authorization: Bearer $FACTORY_API_TOKEN" \
+  -H "X-Factory-User-Id: usr_..." \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"My product","repoUrl":"https://github.com/owner/app"}' | jq
+```
+
+If the GitHub App is not installed on that repository, the response is `428`
+with `code: "github_app_not_installed"`. The webapp uses this to show the
+installation link; the user does not configure a webhook.
+
+```bash
+curl -s -X POST https://factory.warias.app/api/runs \
   -H "Authorization: Bearer $FACTORY_API_TOKEN" \
   -H "X-Factory-User-Id: usr_..." \
   -H 'Content-Type: application/json' \
   -d '{
-    "repoUrl": "https://github.com/owner/app",
+    "projectId": "proj_...",
     "issueUrl": "https://github.com/owner/app/issues/123",
     "baseBranch": "main"
   }' | jq
 ```
 
 Optional per-run fields: `setupCommand`, `testCommand`.
+
+The public GitHub App webhook lives in the webapp at
+`https://web.factory.warias.app/api/github/webhook`. It verifies
+`X-Hub-Signature-256` with `GITHUB_APP_WEBHOOK_SECRET` and forwards to
+`/api/github/events`. The factory resolves the repository to projects/runs and
+enqueues `pr_sync` jobs. Polling is disabled by default; use
+`FACTORY_PR_POLLING=true` as a fallback.
 
 ## Agents
 

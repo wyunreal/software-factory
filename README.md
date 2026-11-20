@@ -19,11 +19,15 @@ flowchart LR
 
 ## What it does
 
-- Starts a run from a webapp with **repo + issue URL**.
+- Starts a run from a webapp with **project + issue URL**.
+- **Projects** group issues and runs by repository; each project belongs to one
+  user and a user can have many projects.
 - Webapp sign-in with **email/password or OAuth2** (Google, GitHub, Apple,
   Microsoft Entra ID, GitLab) via stable NextAuth v4.
 - Runs, artifacts and events are isolated per user; each account sees only its
   own executions.
+- GitHub PR activity arrives through **signed webhooks**, so the factory does
+  not poll every project and user. Polling remains an opt-in fallback.
 - Planner → Builder → QA → deterministic tests → Reviewer.
 - Isolated git worktree and `factory/<ticket>-<run>` branch per run.
 - Same-PR rework on `CHANGES_REQUESTED`; PR comments are triaged before any
@@ -41,17 +45,37 @@ docker compose up --build -d
 docker compose ps
 ```
 
-`FACTORY_API_TOKEN` and `WEB_AUTH_SECRET` are required. Generate each one
-with `openssl rand -hex 32`.
+`FACTORY_API_TOKEN`, `WEB_AUTH_SECRET` and `GITHUB_APP_WEBHOOK_SECRET` are
+required, plus the GitHub App credentials (`GITHUB_APP_ID`,
+`GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_SLUG`). In production the webapp lives
+at <https://web.factory.warias.app> and the factory API at
+<https://factory.warias.app>.
 
-Webapp: <http://localhost:8080>. Create the first account at `/register` with
-email/password or any OAuth2 provider configured in `.env`; from then on the
-webapp and its API proxy require a signed-in session.
+Webapp: <https://web.factory.warias.app>. Create the first account at
+`/register` with email/password or any OAuth2 provider configured in `.env`;
+then create a project with a name and a GitHub repository. If the GitHub App is
+not installed on that repository yet, the webapp offers the installation flow.
+Issues are launched inside a project and must belong to its repository.
 
 Health:
-`curl -H "Authorization: Bearer $FACTORY_API_TOKEN" http://127.0.0.1:13000/health`
-(or your `FACTORY_HOST_PORT`). The factory API requires the bearer token on
-every route.
+`curl -H "Authorization: Bearer $FACTORY_API_TOKEN" https://factory.warias.app/health`.
+The factory API requires the bearer token on every route.
+
+PR activity is event-driven through a **GitHub App**. Configure the App's
+webhook once (not per repository):
+
+```text
+Webhook URL: https://web.factory.warias.app/api/github/webhook
+Setup URL:   https://web.factory.warias.app/api/github/install/callback
+Secret:      GITHUB_APP_WEBHOOK_SECRET
+```
+
+Subscribe to **Pull requests**, **Pull request reviews**, **Pull request review
+comments**, **Issue comments**, **Check suites**, **Check runs** and **Commit
+statuses**. The App sends events for every repository where it is installed; the
+webapp verifies `X-Hub-Signature-256` and forwards them to the internal factory
+API. Users only install the App once per repository or organization. For local
+development without a public URL, set `FACTORY_PR_POLLING=true` as a fallback.
 
 Your local OpenCode is never touched. The factory runs its own OpenCode
 container on an internal port, with its own config and data volume.
@@ -61,7 +85,7 @@ container on an internal port, with its own config and data volume.
 | Guide | Contents |
 | --- | --- |
 | [Documentation index](docs/README.md) | all guides in one place |
-| [Getting started](docs/getting-started/README.md) | requirements, isolation, first run, GitHub token, toolchain detection |
+| [Getting started](docs/getting-started/README.md) | requirements, isolation, first run, GitHub App, toolchain detection |
 | [Configuration](docs/configuration/README.md) | models, auto-merge, rework, comment triage, env reference |
 | [Local testing](docs/local-testing/README.md) | tests, Compose, end-to-end runs, host development, troubleshooting |
 | [Operations](docs/operations/README.md) | lifecycle, states, artifacts, API, agents, project map |
@@ -78,9 +102,10 @@ future phases.
 ## Safety
 
 - `.env` is gitignored, should stay at `600`, and must never be committed.
-- Use a GitHub token restricted to the target repos. Fine-grained PATs cannot
-  access private repos owned by another personal account, even as a collaborator;
-  use a classic `repo` token in that case.
+- The factory authenticates to GitHub as a **GitHub App**. Users install the App
+  only on the repositories they want to use; no PAT or per-repo webhook is
+  shared. Keep the App private key and webhook secret in `.env` or a mounted
+  secret file.
 - Run the factory only against trusted repositories: agents execute build and
   test commands in the OpenCode container.
 

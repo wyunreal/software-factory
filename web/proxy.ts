@@ -15,8 +15,13 @@ const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 export async function proxy(request: NextRequest): Promise<NextResponse> {
   const { pathname, search } = request.nextUrl;
 
-  // NextAuth owns its routes, CSRF tokens and OAuth callbacks.
-  if (pathname.startsWith(AUTH_API_PREFIX)) return NextResponse.next();
+  // NextAuth owns its routes, and GitHub authenticates webhooks by signature.
+  if (
+    pathname.startsWith(AUTH_API_PREFIX) ||
+    pathname === "/api/github/webhook"
+  ) {
+    return NextResponse.next();
+  }
 
   if (MUTATING_METHODS.has(request.method) && !isSameOrigin(request)) {
     return NextResponse.json(

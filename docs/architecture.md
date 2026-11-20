@@ -3,15 +3,18 @@
 ## Guiding principle
 
 OpenCode is the **agent runtime**, not the global orchestrator. The factory
-separates **trigger detection** (`TriggerWatcher`) from **job execution**
-(`RunWorker` + `Workflow`). The watcher only decides that a run needs work and
-enqueues a job; the worker owns state transitions and invokes agents.
+separates **event ingestion** (GitHub webhooks, optional `TriggerWatcher`) from
+**job execution** (`RunWorker` + `Workflow`). Ingestion only decides that a run
+needs work and enqueues a job; the worker owns state transitions and invokes
+agents.
 
 ```mermaid
 flowchart LR
-  W["webapp :8080"] -->|repo + issue| O["API / TriggerWatcher"]
-  GH["GitHub PR · reviews · comments"] --> O
-  O -->|run_jobs| Q[("PostgreSQL")]
+  W["webapp :8080"] -->|user + project + issue| API["API"]
+  GH["GitHub PR · reviews · comments · checks"] -->|signed webhook| WH["webapp /api/github/webhook"]
+  WH -->|service token| API
+  API -->|projects · runs| DB[("PostgreSQL")]
+  API -->|run_jobs| Q[("run_jobs")]
   Q -->|claim| R["RunWorker"]
   R -->|state machine| WF["Workflow"]
   WF -->|sessions · prompts| OC["OpenCode"]
@@ -19,7 +22,10 @@ flowchart LR
   G -->|branch + PR| GH
 ```
 
-The repo and issue arrive at runtime from the webapp or `POST /api/runs`.
+A user creates projects (name + repository) and launches issues inside a
+project. A run stores its `owner_user_id` and `project_id`; every user-facing
+read is scoped to the owner. PR activity is pushed by GitHub instead of polled
+across all projects; `FACTORY_PR_POLLING=true` enables the old polling fallback.
 Worktrees are prepared without running any command: the Planner runs first, the
 Builder performs setup/build/tests, and a verifier agent runs the test gate.
 
@@ -28,16 +34,19 @@ Builder performs setup/build/tests, and a verifier agent runs the test gate.
 | Component | Responsibility |
 | --- | --- |
 | `src/index.ts` | bootstrap, configuration validation, shutdown |
-| `src/api.ts` | HTTP API; `POST /api/runs` creates a run and enqueues a job |
-| `web/` | Next.js webapp to start runs and inspect their state |
-| `src/trigger-watcher.ts` | detects PR activity and enqueues `run_jobs` only |
+| `src/api.ts` | HTTP API: projects, runs, and internal GitHub event intake |
+| `web/` | Next.js webapp: login, projects, runs, public webhook ingress |
+| `web/app/api/github/webhook/route.ts` | verifies GitHub HMAC and forwards events |
+| `src/backlog/github-events.ts` | maps webhook payloads to repository/PR/branch targets |
+| `src/trigger-watcher.ts` | optional polling fallback; enqueues `run_jobs` only |
 | `src/run-worker.ts` | claims jobs and invokes the workflow |
 | `src/workflow.ts` | state machine, artifacts, agent orchestration, git plumbing |
 | `src/backlog/github.ts` | GitHub Issues connector (`BacklogPort`) |
 | `src/runtime/opencode.ts` | OpenCode Server client (`AgentRuntimePort`) |
 | `src/scm/git.ts` | per-repo clone, worktrees, commits, diff, push |
 | `src/scm/github.ts` | PR creation, reviews, merge |
-| `src/store/postgres.ts` | persistence (`RunStore`, `run_jobs`) |
+| `src/github-app.ts` | GitHub App JWT and cached installation tokens |
+| `src/store/postgres.ts` | persistence (`projects`, `runs`, `run_jobs`) |
 | `src/domain/state.ts` | state machine and transition validation |
 | `src/domain/verification.ts` | verifier JSON parser |
 | `src/domain/ticket.ts` | ticket normalization and acceptance criteria |
@@ -46,6 +55,28 @@ Builder performs setup/build/tests, and a verifier agent runs the test gate.
 The ports (`src/ports.ts`) make it possible to test the workflow with in-memory
 doubles and replace GitHub Issues, OpenCode, or PostgreSQL without touching the
 logic.
+
+## Projects and event ingestion
+
+- `projects` belongs to one `users` row and stores `name`, `repo`, `repo_url`.
+  A user may have many projects; `(owner_user_id, repo)` is unique.
+- `runs` stores `owner_user_id` and `project_id`. `POST /api/runs` accepts a
+  `projectId` and rejects an issue whose repository differs from the project.
+- The public entry point for GitHub is `POST /api/github/webhook` in the webapp.
+  It verifies `X-Hub-Signature-256` with `GITHUB_APP_WEBHOOK_SECRET` and forwards
+  the event to the token-protected `POST /api/github/events` in the factory.
+- The App webhook is configured once at App level, not per repository. The App
+  is installed on selected repos/orgs; installation tokens are resolved per
+  repository and used for Issues, PRs, reviews and git.
+- The factory maps `repository.full_name` to projects and human-review runs,
+  then enqueues one `pr_sync` job per matching run. `X-GitHub-Delivery` is part
+  of the dedup key, so GitHub retries are idempotent.
+- Supported events: `pull_request`, `pull_request_review`,
+  `pull_request_review_comment`, `issue_comment`, `check_suite`, `check_run` and
+  `status`. Branch-based `status` events match the run branch; the rest match the
+  PR number.
+- `FACTORY_PR_POLLING=false` by default. `true` restores the old global scan of
+  `HUMAN_REVIEW` runs for local work without a public webhook URL.
 
 ## Workflow ownership
 
@@ -156,11 +187,11 @@ Concurrent processing of the same run (leases) is left for Phase 2.
 - OpenCode permission requests are answered automatically only for sessions
   created by the factory; they are written to logs. This can be disabled with
   `FACTORY_AUTO_APPROVE_PERMISSIONS=false`.
-- The GitHub token is used in memory for git and the API; it is not written to
-  `.git/config`.
+- GitHub App installation tokens are resolved per repository, kept in memory
+  only, and are not written to `.git/config`.
 - The container only mounts the data volume and the agents; not the host home.
-- The target repo is resolved per run from the webapp/API; the GitHub token's
-  permissions decide what can be cloned and pushed.
+- The target repo is resolved from the project; the App installation decides
+  which repositories can be cloned and pushed.
 - Build and test commands are executed by agents inside the OpenCode container;
   treat the target repo as trusted code.
 

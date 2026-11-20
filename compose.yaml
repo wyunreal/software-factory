@@ -41,11 +41,16 @@ services:
       XDG_STATE_HOME: /data/opencode/state
       OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-opencode}
       # .env also carries factory credentials; the agent runtime must not see them.
-      GITHUB_TOKEN: ""
       DATABASE_URL: ""
       POSTGRES_PASSWORD: ""
       FACTORY_API_TOKEN: ""
       WEB_AUTH_SECRET: ""
+      GITHUB_APP_ID: ""
+      GITHUB_APP_PRIVATE_KEY: ""
+      GITHUB_APP_PRIVATE_KEY_BASE64: ""
+      GITHUB_APP_PRIVATE_KEY_PATH: ""
+      GITHUB_APP_WEBHOOK_SECRET: ""
+      GITHUB_APP_SLUG: ""
       WEB_REGISTRATION_CODE: ""
       WEB_DATABASE_URL: ""
       WEB_COOKIE_SECURE: ""
@@ -92,10 +97,14 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       FACTORY_API_TOKEN: ${FACTORY_API_TOKEN:?FACTORY_API_TOKEN is required}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:?GITHUB_APP_ID is required}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:?GITHUB_APP_SLUG is required}
       FACTORY_DATA_DIR: /data
       FACTORY_OPENCODE_URL: http://opencode:4096
       FACTORY_PORT: 3000
+      FACTORY_PR_POLLING: ${FACTORY_PR_POLLING:-false}
       WEB_AUTH_SECRET: ""
+      GITHUB_APP_WEBHOOK_SECRET: ""
       WEB_REGISTRATION_CODE: ""
       WEB_DATABASE_URL: ""
       WEB_COOKIE_SECURE: ""
@@ -128,14 +137,16 @@ services:
     environment:
       FACTORY_API_URL: http://factory:3000
       FACTORY_API_TOKEN: ${FACTORY_API_TOKEN:?FACTORY_API_TOKEN is required}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:?GITHUB_APP_SLUG is required}
+      GITHUB_APP_WEBHOOK_SECRET: ${GITHUB_APP_WEBHOOK_SECRET:?GITHUB_APP_WEBHOOK_SECRET is required}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       WEB_DATABASE_URL: ${WEB_DATABASE_URL:-}
       WEB_AUTH_SECRET: ${WEB_AUTH_SECRET:?WEB_AUTH_SECRET is required}
       WEB_REGISTRATION_CODE: ${WEB_REGISTRATION_CODE:-}
-      WEB_COOKIE_SECURE: ${WEB_COOKIE_SECURE:-false}
+      WEB_COOKIE_SECURE: ${WEB_COOKIE_SECURE:-true}
       WEB_SESSION_TTL_HOURS: ${WEB_SESSION_TTL_HOURS:-168}
-      WEB_PUBLIC_ORIGIN: ${WEB_PUBLIC_ORIGIN:-}
-      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:8080}
+      WEB_PUBLIC_ORIGIN: ${WEB_PUBLIC_ORIGIN:-https://web.factory.warias.app}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-https://web.factory.warias.app}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
       AUTH_SECRET: ${AUTH_SECRET:-}
       AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}

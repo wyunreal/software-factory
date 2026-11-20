@@ -60,9 +60,11 @@ docker compose ps
 docker compose logs -f factory
 ```
 
-`.env` must include `FACTORY_API_TOKEN` and `WEB_AUTH_SECRET` (generate each
-with `openssl rand -hex 32`); Compose refuses to start without them. OAuth
-providers are optional; set `AUTH_<PROVIDER>_ID`/`_SECRET` to enable them.
+`.env` must include `FACTORY_API_TOKEN`, `WEB_AUTH_SECRET` and
+`GITHUB_APP_WEBHOOK_SECRET` (generate each with `openssl rand -hex 32`); Compose
+refuses to start without them. It also needs the GitHub App credentials
+(`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` or `_PATH`, and `GITHUB_APP_SLUG`).
+OAuth providers are optional; set `AUTH_<PROVIDER>_ID`/`_SECRET` to enable them.
 
 Compose starts four services: `postgres`, `opencode`, `factory`, and `web`. No
 manual OpenCode process is needed.
@@ -82,26 +84,33 @@ curl -s -H "Authorization: Bearer $FACTORY_API_TOKEN" \
 docker compose exec factory npm run opencode-check
 ```
 
-Open the webapp at <http://localhost:8080> and create an account at
-<http://localhost:8080/register>. You can register with email/password or use
-any OAuth2 provider configured in `.env`. Every webapp page and API request
-requires a signed-in session. Use `localhost` rather than `127.0.0.1` for OAuth
-so the callback URL matches.
+Open the webapp at <https://web.factory.warias.app> and create an account at
+`/register`. You can register with email/password or use any OAuth2 provider
+configured in `.env`. Then create a project with a name and its GitHub
+repository. If the GitHub App is not installed on that repository, the webapp
+offers the installation flow. Every webapp page and API request requires a
+signed-in session.
+
+For PR activity, configure the GitHub App webhook once to
+`https://web.factory.warias.app/api/github/webhook` with
+`GITHUB_APP_WEBHOOK_SECRET`. Set the App Setup URL to
+`https://web.factory.warias.app/api/github/install/callback`. Subscribe to pull
+requests, reviews, review comments, issue comments, check suites, check runs and
+commit statuses. Local development without a public URL can set
+`FACTORY_PR_POLLING=true` as a fallback.
 
 ## Start a run
 
-Fill in the webapp:
+Select a project in the webapp and fill in:
 
-- **Repository**: `https://github.com/owner/app`
-- **Issue URL**: `https://github.com/owner/app/issues/123`
+- **Issue URL**: `https://github.com/owner/app/issues/123` — it must belong to
+  the project's repository.
 - **Base branch**: usually `main`
 - Optional: setup/test command hints for this run only
 
-The factory validates that repo and issue match, fetches the issue, clones the
-repo, creates a worktree, and enqueues the run. The agents then inspect the repo
-and decide how to build and test.
-
-The repo does not go in the issue: the webapp passes it explicitly.
+The factory validates that the issue belongs to the project repository, fetches
+the issue, clones the repo, creates a worktree, and enqueues the run. The agents
+then inspect the repo and decide how to build and test.
 
 ## Toolchain
 
@@ -114,22 +123,28 @@ checks the project uses, and returns a structured result.
 optional hints for the agents. The factory never executes them. If the project
 has no tests, the gate is skipped.
 
-## GitHub token
+## GitHub App
 
-Use a **fine-grained PAT** and select only the target repository:
+The factory operates as a GitHub App, not as a personal token. Create the App
+once under the factory account or organization:
 
-```text
-Repository access → Only select repositories → your-repo
-```
+- **Homepage URL**: `https://web.factory.warias.app`
+- **Webhook URL**: `https://web.factory.warias.app/api/github/webhook`
+- **Setup URL**: `https://web.factory.warias.app/api/github/install/callback`
+- **Webhook secret**: `GITHUB_APP_WEBHOOK_SECRET`
+- **Repository permissions**: Metadata read; Issues read/write; Contents
+  read/write; Pull requests read/write; Checks read; Commit statuses read.
+- **Events**: Pull requests, Pull request reviews, Pull request review comments,
+  Issue comments, Check suites, Check runs, Commit statuses.
 
-Classic PATs with the `repo` scope cannot be restricted per repo. If the repo is
-in an organization that restricts fine-grained tokens, the token may need owner
-approval.
+Users install the App only on the repositories they want to use, choosing
+**Only select repositories**. The App receives installation tokens for those
+repositories; it cannot access the rest. No PAT or per-repo webhook is needed.
 
-> **Fine-grained tokens and personal repos:** a fine-grained PAT cannot access a
-> private repository owned by **another personal account**, even when its owner
-> is a collaborator. If the target repo belongs to a different user, use a classic
-> PAT with the `repo` scope, or move the repo to an organization.
+Store the App ID, slug and private key in `.env` (or mount the PEM and set
+`GITHUB_APP_PRIVATE_KEY_PATH`). The private key is a high-value secret: keep it
+out of git and out of the Docker image. For `.env`, the easiest form is
+`GITHUB_APP_PRIVATE_KEY_BASE64="$(base64 -w0 github-app.pem)"`.
 
 ## Next
 

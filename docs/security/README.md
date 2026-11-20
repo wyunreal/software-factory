@@ -44,39 +44,59 @@
 
 ## Data isolation between users
 
-- Every run stores `owner_user_id` in PostgreSQL. `GET /api/runs` only returns
-  runs owned by the requesting user, and `GET /api/runs/:id` returns `404` when
-  the run belongs to someone else.
+- Every project belongs to exactly one user; every run stores both
+  `owner_user_id` and `project_id`.
+- `GET /api/projects`, `GET /api/runs` and `GET /api/runs/:id` are scoped to the
+  authenticated user. A project or run owned by another user is reported as
+  `404`.
+- `POST /api/runs` requires a `projectId` owned by the caller and rejects issues
+  from any other repository.
 - Artifacts, events and processed feedback are always read through a run that
   was already checked for ownership; they are not exposed by any unscoped
   endpoint.
-- The webapp forwards `X-Factory-User-Id` from the verified NextAuth session.
-  The header is set server-side in the `/api/*` proxy and never copied from the
-  browser. The factory API also requires the service bearer token, so a browser
-  cannot call it directly.
-- The unique index for active runs is now `(owner_user_id, ticket_card_id)`, so
-  two users can queue the same issue without seeing each other's run. Runs
-  created before ownership existed (and not backfilled) are ownerless and
-  invisible to the API.
+- Existing runs are migrated into projects by owner + repository on startup.
 - The worker, TriggerWatcher and job queue intentionally operate across all
   users; they never serve user data. Isolation is enforced at the API/store
   boundary, not with PostgreSQL Row-Level Security.
 
+## GitHub App ingress
+
+- The public endpoint is `POST /api/github/webhook` in the webapp. It is the only
+  unauthenticated app route, and every delivery must carry a valid
+  `X-Hub-Signature-256` HMAC-SHA256 computed with
+  `GITHUB_APP_WEBHOOK_SECRET`.
+- Signature comparison uses `crypto.timingSafeEqual`. Missing or invalid
+  signatures return `401`; the payload is never processed.
+- After verification, the webapp forwards the raw event to the internal,
+  bearer-protected `POST /api/github/events` on the factory. The browser never
+  receives the service token.
+- `X-GitHub-Delivery` is part of the job dedup key, making GitHub retries
+  idempotent. Unsupported events return `202` with `enqueued: 0`.
+- The webhook belongs to one GitHub App, not to each repository. The App is
+  installed on selected repos/orgs and receives events only for those.
+- Polling is off by default (`FACTORY_PR_POLLING=false`); enable it only as a
+  local fallback when GitHub cannot reach the public webhook URL.
+
 ## Secrets
 
-- `.env` contains the GitHub token, provider key, OpenCode password,
-  `FACTORY_API_TOKEN`, `WEB_AUTH_SECRET` and any OAuth client secrets. It is
-  gitignored and should stay at `600` permissions.
+- `.env` contains the GitHub App private key, provider key, OpenCode password,
+  `FACTORY_API_TOKEN`, `GITHUB_APP_WEBHOOK_SECRET`, `WEB_AUTH_SECRET` and any
+  OAuth client secrets. It is gitignored and should stay at `600` permissions.
 - Never commit `.env`. Never use `git add -f .env`.
-- Tokens are not written to logs or `.git/config`.
-- If a token is shared through chat, logs, or screenshots, rotate it.
-- The `opencode` container does not receive `GITHUB_TOKEN`, `DATABASE_URL`,
-  `FACTORY_API_TOKEN`, `WEB_AUTH_SECRET` or OAuth client secrets.
+- Tokens and private keys are not written to logs or `.git/config`.
+- If a token or the App private key is shared through chat, logs, or screenshots,
+  rotate it.
+- The `opencode` container does not receive `DATABASE_URL`,
+  `FACTORY_API_TOKEN`, `GITHUB_APP_ID`, the GitHub App private key,
+  `GITHUB_APP_WEBHOOK_SECRET`, `WEB_AUTH_SECRET` or OAuth client secrets.
 - The webapp receives `FACTORY_API_TOKEN`, database credentials for its own
   `users`/`user_identities` tables (`WEB_DATABASE_URL` can point to a
-  least-privilege role), and OAuth client credentials.
-- The `factory` container does receive GitHub and database credentials, because
-  it performs git and persistence work.
+  least-privilege role), `GITHUB_APP_SLUG`, `GITHUB_APP_WEBHOOK_SECRET` and OAuth
+  client credentials.
+- The `factory` container receives the GitHub App ID/private key and database
+  credentials; it resolves an installation token per repository.
+- Installation tokens are short-lived and scoped to the repositories selected
+  during installation. The App cannot access other private repositories.
 
 ## Trust boundaries
 
@@ -90,28 +110,31 @@ without secrets and add stronger sandboxing.
 
 ## Exposure
 
-- The factory API is bound to `127.0.0.1` by default and requires
+- The webapp is public at `https://web.factory.warias.app`; the factory API is
+  public at `https://factory.warias.app` but requires
   `Authorization: Bearer $FACTORY_API_TOKEN` on every route.
-- The webapp is bound to `127.0.0.1` by default and requires a signed-in session.
 - OpenCode port `4096` is not published.
-- If you expose the webapp/API, set `FACTORY_API_TOKEN` and `WEB_AUTH_SECRET`,
-  enable `WEB_COOKIE_SECURE` behind HTTPS, and consider `WEB_REGISTRATION_CODE`.
-- Use a GitHub token restricted to the target repos. Fine-grained PATs cannot
-  access private repos owned by another personal account, even as a collaborator;
-  use a classic `repo` token in that case.
-- Change the local PostgreSQL password if this is not a local-only install.
+- `NEXTAUTH_URL` and `WEB_PUBLIC_ORIGIN` point to the public HTTPS webapp;
+  `WEB_COOKIE_SECURE=true` and `AUTH_TRUST_HOST=true` are required behind the
+  reverse proxy.
+- Use the GitHub App private key only in the factory container. Users install the
+  App on selected repositories; the App cannot access the rest.
+- Change the PostgreSQL password if this is not a local-only install.
 
 ## Known limits
 
 - A single worker, one run at a time.
-- No multi-tenant isolation; accounts share the same factory runs.
+- Runs, projects, artifacts and events are isolated per user, but the database
+  connection itself is shared by the factory; this is not PostgreSQL RLS.
 - Session revocation requires rotating `WEB_AUTH_SECRET`; individual sessions
   are not stored server-side.
 - The login rate limiter is in-memory and per webapp instance.
 - GitHub/GitLab/Microsoft addresses are treated as verified because those
   providers expose managed addresses without an `email_verified` claim.
-- Auto-merge requires a real `APPROVED` review; the factory's same-user token
-  cannot self-approve, so use a bot/App or another reviewer.
+- Auto-merge requires a real human `APPROVED`; the GitHub App bot cannot approve
+  its own PR.
+- The GitHub App must be public to be installable by arbitrary users, and the
+  person installing it needs admin access to the repository/org.
 - Old worktrees and branches are not cleaned up automatically.
 
 See [Architecture](../architecture.md) for runtime isolation details and

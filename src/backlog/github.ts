@@ -1,4 +1,4 @@
-import type { BacklogPort } from "../ports.ts";
+import type { BacklogPort, GitHubAuthPort } from "../ports.ts";
 import type { GithubConfig } from "../config.ts";
 import type { Run, Ticket } from "../domain/types.ts";
 import { parseAcceptanceCriteria } from "../domain/ticket.ts";
@@ -22,14 +22,12 @@ type GitHubIssue = {
 export class GitHubIssuesBacklog implements BacklogPort {
   constructor(
     private readonly config: GithubConfig,
+    private readonly auth: GitHubAuthPort,
     private readonly logger: Logger,
   ) {}
 
   async validate(): Promise<void> {
-    const user = await this.request<{ login?: string }>("/user");
-    this.logger.info("GitHub credentials validated", {
-      user: user.login ?? "(unknown)",
-    });
+    await this.auth.validate();
   }
 
   async ensureLabelsForRepo(repo: string): Promise<void> {
@@ -49,6 +47,7 @@ export class GitHubIssuesBacklog implements BacklogPort {
   async getTicket(repo: string, number: number): Promise<Ticket> {
     await this.ensureLabelsForRepo(repo);
     const issue = await this.request<GitHubIssue>(
+      repo,
       `${this.repoPath(repo)}/issues/${number}`,
     );
     if (issue.pull_request) {
@@ -91,9 +90,12 @@ export class GitHubIssuesBacklog implements BacklogPort {
   }
 
   async comment(ticket: Ticket, text: string): Promise<void> {
-    await this.request(`${this.issuePath(ticket)}/comments`, "POST", {
-      body: truncate(text, 60_000),
-    });
+    await this.request(
+      this.ticketRepo(ticket),
+      `${this.issuePath(ticket)}/comments`,
+      "POST",
+      { body: truncate(text, 60_000) },
+    );
   }
 
   async moveToReview(ticket: Ticket): Promise<void> {
@@ -109,7 +111,10 @@ export class GitHubIssuesBacklog implements BacklogPort {
   }
 
   async isDone(ticket: Ticket): Promise<boolean> {
-    const issue = await this.request<GitHubIssue>(this.issuePath(ticket));
+    const issue = await this.request<GitHubIssue>(
+      this.ticketRepo(ticket),
+      this.issuePath(ticket),
+    );
     return issue.state === "closed";
   }
 
@@ -129,6 +134,13 @@ export class GitHubIssuesBacklog implements BacklogPort {
       repo,
       repoUrl: `https://github.com/${repo}.git`,
     };
+  }
+
+  private ticketRepo(ticket: Ticket): string {
+    if (!ticket.repo) {
+      throw new Error(`Ticket ${ticket.ref} has no GitHub repository`);
+    }
+    return ticket.repo;
   }
 
   private repoPath(repo: string): string {
@@ -153,15 +165,19 @@ export class GitHubIssuesBacklog implements BacklogPort {
 
   private async addLabel(ticket: Ticket, label: string): Promise<void> {
     if (!label) return;
-    await this.request(`${this.issuePath(ticket)}/labels`, "POST", {
-      labels: [label],
-    });
+    await this.request(
+      this.ticketRepo(ticket),
+      `${this.issuePath(ticket)}/labels`,
+      "POST",
+      { labels: [label] },
+    );
   }
 
   private async removeLabel(ticket: Ticket, label: string): Promise<void> {
     if (!label) return;
     try {
       await this.request(
+        this.ticketRepo(ticket),
         `${this.issuePath(ticket)}/labels/${encodeURIComponent(label)}`,
         "DELETE",
       );
@@ -178,7 +194,7 @@ export class GitHubIssuesBacklog implements BacklogPort {
     description: string,
   ): Promise<void> {
     try {
-      await this.request(`${this.repoPath(repo)}/labels`, "POST", {
+      await this.request(repo, `${this.repoPath(repo)}/labels`, "POST", {
         name,
         color,
         description,
@@ -191,14 +207,16 @@ export class GitHubIssuesBacklog implements BacklogPort {
   }
 
   private async request<T = unknown>(
+    repo: string,
     path: string,
     method = "GET",
     body?: unknown,
   ): Promise<T> {
+    const token = await this.auth.tokenForRepository(repo);
     const response = await fetch(`${this.config.apiUrl}${path}`, {
       method,
       headers: {
-        Authorization: `Bearer ${this.config.token}`,
+        Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "software-factory",

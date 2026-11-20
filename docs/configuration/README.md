@@ -137,36 +137,109 @@ Register the callback URL in each provider:
 `${NEXTAUTH_URL}/api/auth/callback/<provider>`.
 
 ```env
-FACTORY_API_TOKEN=<openssl rand -hex 32>   # required, also protects the API
-WEB_AUTH_SECRET=<openssl rand -hex 32>     # required, encrypts session JWTs
-NEXTAUTH_URL=http://localhost:8080         # public origin for OAuth callbacks
-AUTH_TRUST_HOST=true                       # behind a reverse proxy
-WEB_REGISTRATION_CODE=                     # optional code for password sign-up
-WEB_COOKIE_SECURE=false                    # true behind HTTPS
-WEB_SESSION_TTL_HOURS=168                  # 1-720
-WEB_DATABASE_URL=                          # optional least-privilege DB role
+FACTORY_API_TOKEN=<openssl rand -hex 32>        # required, also protects the API
+GITHUB_APP_WEBHOOK_SECRET=<openssl rand -hex 32> # required, GitHub App webhook
+WEB_AUTH_SECRET=<openssl rand -hex 32>          # required, encrypts session JWTs
+NEXTAUTH_URL=https://web.factory.warias.app     # public webapp origin
+AUTH_TRUST_HOST=true                            # behind a reverse proxy
+WEB_REGISTRATION_CODE=                          # optional code for password sign-up
+WEB_COOKIE_SECURE=true                          # required behind HTTPS
+WEB_SESSION_TTL_HOURS=168                       # 1-720
+WEB_DATABASE_URL=                               # optional least-privilege DB role
 
-AUTH_GOOGLE_ID=                            # and _SECRET
-AUTH_GITHUB_ID=                            # and _SECRET
-AUTH_APPLE_ID=                             # and _SECRET (client secret JWT)
-AUTH_AZURE_AD_ID=                          # and _SECRET, _TENANT_ID
-AUTH_GITLAB_ID=                            # and _SECRET
+AUTH_GOOGLE_ID=                                 # and _SECRET
+AUTH_GITHUB_ID=                                 # and _SECRET
+AUTH_APPLE_ID=                                  # and _SECRET (client secret JWT)
+AUTH_AZURE_AD_ID=                               # and _SECRET, _TENANT_ID
+AUTH_GITLAB_ID=                                 # and _SECRET
 ```
 
-For local OAuth use <http://localhost:8080> (not `127.0.0.1`) and register that
-exact callback. Apple requires a public HTTPS return URL. The factory API
-requires `Authorization: Bearer $FACTORY_API_TOKEN` on every route, including
-`/health`.
+Register each OAuth callback at
+`https://web.factory.warias.app/api/auth/callback/<provider>`. Apple requires a
+public HTTPS return URL. The factory API requires
+`Authorization: Bearer $FACTORY_API_TOKEN` on every route, including `/health`.
 
 OAuth sign-in links an identity to an existing account only when the provider
 confirms the email. Password sign-up still works at `/register`; use
 `WEB_REGISTRATION_CODE` to gate it.
 
+## GitHub App
+
+The factory authenticates to GitHub as an App, not with a personal token.
+Create it once under the factory account/organization:
+
+```text
+Homepage URL: https://web.factory.warias.app
+Webhook URL:  https://web.factory.warias.app/api/github/webhook
+Setup URL:    https://web.factory.warias.app/api/github/install/callback
+Secret:       GITHUB_APP_WEBHOOK_SECRET
+```
+
+Permissions: Metadata read; Issues read/write; Contents read/write; Pull
+requests read/write; Checks read; Commit statuses read.
+
+Events: Pull requests, Pull request reviews, Pull request review comments, Issue
+comments, Check suites, Check runs, Commit statuses.
+
+```env
+GITHUB_APP_ID=
+GITHUB_APP_SLUG=
+GITHUB_APP_PRIVATE_KEY=          # PEM with \n escapes
+GITHUB_APP_PRIVATE_KEY_BASE64=   # or base64 -w0 github-app.pem
+# or:
+GITHUB_APP_PRIVATE_KEY_PATH=/run/secrets/github-app.pem
+```
+
+Users install the App only on the repositories they want, with **Only select
+repositories**. The rest stay outside the App's access. The webapp offers the
+installation automatically when a project is created for a repository that is
+not covered yet.
+
+## Projects
+
+A project has a name and a GitHub repository. It belongs to one user, and a user
+can create as many projects as needed. A repository can appear only once per
+user. Runs are launched with a `projectId`; the issue URL must belong to that
+project's repository.
+
+```bash
+curl -s -X POST https://factory.warias.app/api/projects \
+  -H "Authorization: Bearer $FACTORY_API_TOKEN" \
+  -H "X-Factory-User-Id: usr_..." \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"My product","repoUrl":"https://github.com/owner/repo"}'
+```
+
+If the App is not installed, the API returns `428` with
+`code: "github_app_not_installed"`. The webapp uses that response to offer the
+installation link. Existing runs are migrated into projects by owner +
+repository on startup.
+
+## GitHub events
+
+No per-repository webhook is needed. The GitHub App webhook receives events from
+every repository where the App is installed:
+
+```text
+Payload URL: https://web.factory.warias.app/api/github/webhook
+Content type: application/json
+Secret: GITHUB_APP_WEBHOOK_SECRET
+```
+
+The webapp verifies `X-Hub-Signature-256` with HMAC-SHA256 and forwards the
+delivery to the internal factory API. Set `FACTORY_PR_POLLING=true` only as a
+local fallback when GitHub cannot reach the webapp.
+
 ## Environment reference
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `GITHUB_TOKEN` | — (required) | PAT with Issues, Contents, Pull requests |
+| `GITHUB_APP_ID` | — (required) | GitHub App ID |
+| `GITHUB_APP_SLUG` | — (required) | GitHub App slug |
+| `GITHUB_APP_PRIVATE_KEY` | — | App private key PEM (with `\n` escapes) |
+| `GITHUB_APP_PRIVATE_KEY_BASE64` | empty | App private key PEM encoded as base64 |
+| `GITHUB_APP_PRIVATE_KEY_PATH` | empty | alternative path to the PEM |
+| `GITHUB_APP_WEBHOOK_SECRET` | — (required) | App webhook HMAC secret |
 | `FACTORY_TEST_CMD` | empty | test command hint for the Builder/Verifier |
 | `FACTORY_SETUP_CMD` | empty | setup command hint for the Builder |
 | `FACTORY_MAX_REWORK` | `3` | maximum correction cycles |
@@ -188,14 +261,15 @@ confirms the email. Password sign-up still works at `/register`; use
 | `FACTORY_OPENCODE_URL` | — (required) | isolated runtime URL |
 | `FACTORY_HOST_PORT` | `3000` | API host port |
 | `FACTORY_API_TOKEN` | — (required) | bearer token for every factory API route |
+| `FACTORY_PR_POLLING` | `false` | global PR polling fallback; webhooks are primary |
 | `WEB_HOST_PORT` | `8080` | webapp host port |
 | `WEB_AUTH_SECRET` | — (required) | encrypts NextAuth session JWTs (32+ chars) |
 | `WEB_REGISTRATION_CODE` | empty | required invite code when set |
-| `WEB_COOKIE_SECURE` | `false` | mark session cookies `Secure` (HTTPS) |
+| `WEB_COOKIE_SECURE` | `true` | mark session cookies `Secure` (HTTPS) |
 | `WEB_SESSION_TTL_HOURS` | `168` | webapp session lifetime |
-| `WEB_PUBLIC_ORIGIN` | empty | public origin used to derive cookie security |
+| `WEB_PUBLIC_ORIGIN` | `https://web.factory.warias.app` | public webapp origin |
+| `NEXTAUTH_URL` | `https://web.factory.warias.app` | public origin for NextAuth/OAuth callbacks |
 | `WEB_DATABASE_URL` | empty | DB URL for `users` (falls back to `DATABASE_URL`) |
-| `NEXTAUTH_URL` | `http://localhost:8080` | public origin used for OAuth callbacks |
 | `NEXTAUTH_SECRET` | `WEB_AUTH_SECRET` | optional alias for the NextAuth secret |
 | `AUTH_TRUST_HOST` | `true` | trust the forwarded host behind a proxy |
 | `AUTH_GOOGLE_ID` / `_SECRET` | empty | Google OAuth client |

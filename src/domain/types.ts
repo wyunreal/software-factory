@@ -32,9 +32,19 @@ export const RUN_STATES = [
 
 export type RunState = (typeof RUN_STATES)[number];
 
+export type Project = {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  repo: string;
+  repoUrl: string;
+  createdAt: string;
+};
+
 export type Run = {
   id: string;
   ownerUserId: string | null;
+  projectId: string | null;
   ticket: Ticket;
   state: RunState;
   repoUrl: string;

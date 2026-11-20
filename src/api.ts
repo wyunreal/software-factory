@@ -5,13 +5,16 @@ import { repositoryFromUrl } from "./config.ts";
 import type { TriggerWatcher } from "./trigger-watcher.ts";
 import type { RunWorker } from "./run-worker.ts";
 import type { RunStore } from "./ports.ts";
-import type { AgentRuntimePort } from "./ports.ts";
+import type { AgentRuntimePort, GitHubAuthPort } from "./ports.ts";
 import type { Logger } from "./logger.ts";
 import type { GitHubIssuesBacklog } from "./backlog/github.ts";
+import { parseGithubEvent } from "./backlog/github-events.ts";
+import { pullRequestNumberFromUrl } from "./scm/approvals.ts";
 
 export type ApiDependencies = {
   config: FactoryConfig;
   store: RunStore;
+  githubAuth: GitHubAuthPort;
   watcher: TriggerWatcher;
   worker: RunWorker;
   runtime: AgentRuntimePort & { health(): Promise<void> };
@@ -43,9 +46,13 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
         endpoints: [
           "GET /health",
           "GET /api/status",
+          "GET /api/projects",
+          "POST /api/projects",
+          "POST /api/github/installations",
           "GET /api/runs",
           "GET /api/runs/:id",
           "POST /api/runs",
+          "POST /api/github/events",
           "POST /api/tick",
         ],
       });
@@ -74,6 +81,114 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
       });
     }
 
+    if (request.method === "GET" && url.pathname === "/api/projects") {
+      const userId = requestUserId(request);
+      if (!userId) return missingUser();
+      return json({ data: await deps.store.listProjectsForUser(userId) });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/projects") {
+      const userId = requestUserId(request);
+      if (!userId) return missingUser();
+      try {
+        const body = (await request.json()) as CreateProjectBody;
+        const name = parseProjectName(body.name);
+        const repoUrl = normalizeRepoUrl(body.repoUrl ?? "");
+        const repo = repositoryFromUrl(repoUrl);
+        if (!repo) throw new Error(`Invalid GitHub repository URL: ${repoUrl}`);
+
+        const installationId =
+          await deps.githubAuth.installationIdForRepository(repo);
+        if (!installationId) {
+          return json(
+            {
+              error:
+                "The GitHub App is not installed on this repository. Install it to create the project.",
+              code: "github_app_not_installed",
+              repo,
+            },
+            428,
+          );
+        }
+
+        const project = await deps.store.createProject({
+          ownerUserId: userId,
+          name,
+          repo,
+          repoUrl,
+        });
+        if (!project) {
+          return json(
+            {
+              error:
+                "A project with that name or repository already exists for this user.",
+            },
+            409,
+          );
+        }
+        return json({ data: project }, 201);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        log.warn("project creation failed", { error: message });
+        return json({ error: message }, 400);
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/github/installations") {
+      const userId = requestUserId(request);
+      if (!userId) return missingUser();
+      try {
+        const body = (await request.json()) as InstallAppBody;
+        const installationId = Number(body.installationId);
+        if (!Number.isInteger(installationId) || installationId <= 0) {
+          throw new Error("installationId is required");
+        }
+        const name = parseProjectName(body.name);
+        const repoUrl = normalizeRepoUrl(body.repoUrl ?? "");
+        const repo = repositoryFromUrl(repoUrl);
+        if (!repo) throw new Error(`Invalid GitHub repository URL: ${repoUrl}`);
+
+        const resolved =
+          await deps.githubAuth.installationIdForRepository(repo);
+        if (resolved !== installationId) {
+          return json(
+            {
+              error:
+                "The GitHub App installation does not have access to this repository.",
+              code: "github_app_repository_not_accessible",
+              repo,
+            },
+            403,
+          );
+        }
+
+        const project = await deps.store.createProject({
+          ownerUserId: userId,
+          name,
+          repo,
+          repoUrl,
+        });
+        if (!project) {
+          return json(
+            {
+              error:
+                "A project with that name or repository already exists for this user.",
+            },
+            409,
+          );
+        }
+        return json({ data: project }, 201);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        log.warn("github installation project creation failed", {
+          error: message,
+        });
+        return json({ error: message }, 400);
+      }
+    }
+
     if (request.method === "GET" && url.pathname === "/api/runs") {
       const userId = requestUserId(request);
       if (!userId) return missingUser();
@@ -86,19 +201,45 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
       if (!userId) return missingUser();
       try {
         const body = (await request.json()) as StartRunBody;
-        const target = parseTarget(body.repoUrl, body.issueUrl);
-        const baseBranch = parseBranch(body.baseBranch ?? "main");
+        const projectId = body.projectId?.trim();
+        if (!projectId) throw new Error("projectId is required");
 
+        const project = await deps.store.getProjectForUser(projectId, userId);
+        if (!project) return json({ error: "project not found" }, 404);
+
+        const installationId =
+          await deps.githubAuth.installationIdForRepository(project.repo);
+        if (!installationId) {
+          return json(
+            {
+              error:
+                "The GitHub App no longer has access to this repository. Reinstall or grant access before launching a run.",
+              code: "github_app_not_installed",
+              repo: project.repo,
+            },
+            428,
+          );
+        }
+
+        const issue = parseIssueUrl(body.issueUrl ?? "");
+        if (issue.repository.toLowerCase() !== project.repo.toLowerCase()) {
+          throw new Error(
+            `The issue belongs to ${issue.repository}, not to project repository ${project.repo}`,
+          );
+        }
+
+        const baseBranch = parseBranch(body.baseBranch ?? "main");
         const ticket = await deps.backlog.getTicket(
-          target.repository,
-          target.issueNumber,
+          project.repo,
+          issue.issueNumber,
         );
-        ticket.repo = target.repository;
-        ticket.repoUrl = target.repoUrl;
+        ticket.repo = project.repo;
+        ticket.repoUrl = project.repoUrl;
 
         const run = await deps.store.createRun(ticket, {
           ownerUserId: userId,
-          repoUrl: target.repoUrl,
+          projectId: project.id,
+          repoUrl: project.repoUrl,
           baseBranch,
           setupCommand: body.setupCommand ?? null,
           testCommand: body.testCommand ?? null,
@@ -107,7 +248,7 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
           return json(
             {
               error:
-                "An active run already exists for this issue. Wait for it to finish or check /api/runs.",
+                "An active run already exists for this issue in this project. Wait for it to finish or check /api/runs.",
             },
             409,
           );
@@ -116,8 +257,8 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
         try {
           await deps.backlog.claim(ticket, run);
           await deps.store.addEvent(run.id, "backlog.claimed", {
-            repository: target.repository,
-            issueNumber: target.issueNumber,
+            repository: project.repo,
+            issueNumber: issue.issueNumber,
           });
         } catch (error) {
           const message =
@@ -132,10 +273,10 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
         await deps.store.enqueueJob({
           kind: "start_issue",
           runId: run.id,
-          repo: target.repository,
-          issueNumber: target.issueNumber,
+          repo: project.repo,
+          issueNumber: issue.issueNumber,
           dedupKey: `start_issue:${run.id}`,
-          payload: { repository: target.repository, issueNumber: target.issueNumber },
+          payload: { repository: project.repo, issueNumber: issue.issueNumber },
         });
 
         return json({ data: run }, 201);
@@ -161,6 +302,10 @@ export async function startApi(deps: ApiDependencies): Promise<ApiServer> {
         deps.store.listEvents(id),
       ]);
       return json({ data: { ...run, artifacts, events } });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/github/events") {
+      return handleGithubEvent(request, deps);
     }
 
     if (request.method === "POST" && url.pathname === "/api/tick") {
@@ -271,43 +416,102 @@ async function sendResponse(
   res.end(body.length > 0 ? body : undefined);
 }
 
+/**
+ * Internal, token-protected intake for GitHub webhook deliveries. The public
+ * webhook route in the webapp verifies the GitHub signature and forwards the
+ * event here; this handler only maps the event to owned runs and enqueues jobs.
+ */
+async function handleGithubEvent(
+  request: Request,
+  deps: ApiDependencies,
+): Promise<Response> {
+  const event = request.headers.get("x-github-event")?.trim() ?? "";
+  const delivery = request.headers.get("x-github-delivery")?.trim() ?? "";
+  if (!event || !delivery) {
+    return json({ error: "missing github event headers" }, 400);
+  }
+
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ error: "invalid github payload" }, 400);
+  }
+
+  const parsed = parseGithubEvent(event, payload);
+  if (!parsed) {
+    return json({ accepted: true, ignored: true, enqueued: 0 }, 202);
+  }
+
+  const runs = await deps.store.listHumanReviewRunsForRepository(
+    parsed.repository,
+  );
+  let enqueued = 0;
+
+  for (const run of runs) {
+    const prNumber = run.prUrl ? pullRequestNumberFromUrl(run.prUrl) : null;
+    const matchesPr =
+      parsed.prNumbers.length > 0 &&
+      prNumber !== null &&
+      parsed.prNumbers.includes(prNumber);
+    const matchesBranch =
+      parsed.branches.length > 0 &&
+      run.branch !== null &&
+      parsed.branches.includes(run.branch);
+    if (!matchesPr && !matchesBranch) continue;
+
+    const job = await deps.store.enqueueJob({
+      kind: "pr_sync",
+      runId: run.id,
+      repo: parsed.repository,
+      issueNumber: run.ticket.number ?? null,
+      prNumber,
+      dedupKey: `github:${delivery}:${run.id}`,
+      payload: {
+        source: "github-webhook",
+        event: parsed.event,
+        action: parsed.action,
+        delivery,
+        repository: parsed.repository,
+        prNumber,
+      },
+    });
+    if (job) enqueued += 1;
+  }
+
+  return json(
+    {
+      accepted: true,
+      event: parsed.event,
+      action: parsed.action,
+      enqueued,
+    },
+    202,
+  );
+}
+
 type StartRunBody = {
-  repoUrl?: string;
+  projectId?: string;
   issueUrl?: string;
   baseBranch?: string;
   setupCommand?: string | null;
   testCommand?: string | null;
 };
 
-type RunTarget = {
-  repository: string;
-  repoUrl: string;
-  issueNumber: number;
+type CreateProjectBody = {
+  name?: string;
+  repoUrl?: string;
 };
 
-function parseTarget(
-  repoUrlInput: string | undefined,
-  issueUrlInput: string | undefined,
-): RunTarget {
-  if (!issueUrlInput?.trim()) {
-    throw new Error("issueUrl is required");
-  }
+type InstallAppBody = CreateProjectBody & {
+  installationId?: number | string;
+};
 
-  const issue = parseIssueUrl(issueUrlInput);
-  const repoUrl = normalizeRepoUrl(
-    repoUrlInput?.trim() || `https://github.com/${issue.repository}.git`,
-  );
-  const repository = repositoryFromUrl(repoUrl);
-  if (!repository) {
-    throw new Error(`Invalid GitHub repository URL: ${repoUrl}`);
-  }
-  if (repository.toLowerCase() !== issue.repository.toLowerCase()) {
-    throw new Error(
-      `Repository mismatch: the issue is in ${issue.repository}, but repoUrl points to ${repository}`,
-    );
-  }
-
-  return { repository, repoUrl, issueNumber: issue.issueNumber };
+function parseProjectName(value: string | undefined): string {
+  const name = value?.trim() ?? "";
+  if (!name) throw new Error("name is required");
+  if (name.length > 80) throw new Error("name must be at most 80 characters");
+  return name;
 }
 
 function parseIssueUrl(value: string): { repository: string; issueNumber: number } {

@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS runs (
   id text PRIMARY KEY,
   owner_user_id text,
+  project_id text,
   ticket_card_id text NOT NULL,
   ticket_ref text NOT NULL,
   ticket_title text NOT NULL,
@@ -29,6 +30,7 @@ CREATE INDEX IF NOT EXISTS runs_created_idx ON runs (created_at DESC);
 -- Runs are owned by the webapp user that created them. Legacy runs may have no
 -- owner and are never returned by the user-facing API.
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS owner_user_id text;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS project_id text;
 DROP INDEX IF EXISTS runs_active_ticket;
 CREATE UNIQUE INDEX IF NOT EXISTS runs_active_owner_ticket
   ON runs (owner_user_id, ticket_card_id)
@@ -126,6 +128,25 @@ ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx
   ON users (lower(email));
 
+-- A project groups issues and runs for one repository and belongs to one user.
+CREATE TABLE IF NOT EXISTS projects (
+  id text PRIMARY KEY,
+  owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  repo text NOT NULL,
+  repo_url text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS projects_owner_name_idx
+  ON projects (owner_user_id, lower(name));
+CREATE UNIQUE INDEX IF NOT EXISTS projects_owner_repo_idx
+  ON projects (owner_user_id, lower(repo));
+CREATE INDEX IF NOT EXISTS projects_owner_created_idx
+  ON projects (owner_user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS projects_id_owner_idx
+  ON projects (id, owner_user_id);
+
 -- OAuth identities linked to local accounts. A user may have credentials and
 -- several OAuth providers; (provider, provider_account_id) is the stable key.
 CREATE TABLE IF NOT EXISTS user_identities (
@@ -169,6 +190,27 @@ BEGIN
       ALTER TABLE runs
         ADD CONSTRAINT runs_owner_user_required
         CHECK (owner_user_id IS NOT NULL) NOT VALID;
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+       WHERE conname = 'runs_project_owner_fk'
+         AND conrelid = 'runs'::regclass
+    ) THEN
+      ALTER TABLE runs
+        ADD CONSTRAINT runs_project_owner_fk
+        FOREIGN KEY (project_id, owner_user_id)
+        REFERENCES projects(id, owner_user_id) ON DELETE CASCADE;
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+       WHERE conname = 'runs_project_required'
+         AND conrelid = 'runs'::regclass
+    ) THEN
+      ALTER TABLE runs
+        ADD CONSTRAINT runs_project_required
+        CHECK (project_id IS NOT NULL) NOT VALID;
     END IF;
   END IF;
 END;

@@ -20,8 +20,16 @@ const ticket: Ticket = {
 };
 
 async function humanReviewRun(store: MemoryRunStore) {
+  const project = await store.createProject({
+    ownerUserId: "usr_test",
+    name: "Acme app",
+    repo: "acme/app",
+    repoUrl: ticket.repoUrl!,
+  });
+  if (!project) throw new Error("project was not created");
   const run = await store.createRun(ticket, {
     ownerUserId: "usr_test",
+    projectId: project.id,
     repoUrl: ticket.repoUrl!,
     baseBranch: "main",
   });

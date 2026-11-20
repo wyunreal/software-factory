@@ -2,6 +2,7 @@ import type { CreateRunOptions, RunPatch, RunStore } from "../ports.ts";
 import type {
   Artifact,
   EnqueueJobInput,
+  Project,
   Run,
   RunEvent,
   RunJob,
@@ -20,6 +21,7 @@ import { nowIso } from "../util.ts";
  */
 export class MemoryRunStore implements RunStore {
   private runs = new Map<string, Run>();
+  private projects = new Map<string, Project>();
   private artifacts = new Map<string, Artifact[]>();
   private events = new Map<string, RunEvent[]>();
   private processedFeedback = new Set<string>();
@@ -32,6 +34,9 @@ export class MemoryRunStore implements RunStore {
     ticket: Ticket,
     options: CreateRunOptions,
   ): Promise<Run | null> {
+    const project = this.projects.get(options.projectId);
+    if (!project || project.ownerUserId !== options.ownerUserId) return null;
+
     const active = [...this.runs.values()].some(
       (run) =>
         run.ownerUserId === options.ownerUserId &&
@@ -44,6 +49,7 @@ export class MemoryRunStore implements RunStore {
     const run: Run = {
       id: crypto.randomUUID(),
       ownerUserId: options.ownerUserId,
+      projectId: options.projectId,
       ticket: { ...ticket, repoUrl: options.repoUrl },
       state: "CLAIMED",
       repoUrl: options.repoUrl,
@@ -74,6 +80,60 @@ export class MemoryRunStore implements RunStore {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, limit)
       .map((run) => structuredClone(run));
+  }
+
+  async listHumanReviewRunsForRepository(repo: string): Promise<Run[]> {
+    return [...this.runs.values()]
+      .filter(
+        (run) =>
+          run.state === "HUMAN_REVIEW" &&
+          run.finishedAt === null &&
+          run.ticket.repo?.toLowerCase() === repo.toLowerCase(),
+      )
+      .map((run) => structuredClone(run));
+  }
+
+  async createProject(input: {
+    ownerUserId: string;
+    name: string;
+    repo: string;
+    repoUrl: string;
+  }): Promise<Project | null> {
+    const duplicate = [...this.projects.values()].some(
+      (project) =>
+        project.ownerUserId === input.ownerUserId &&
+        (project.name.toLowerCase() === input.name.toLowerCase() ||
+          project.repo.toLowerCase() === input.repo.toLowerCase()),
+    );
+    if (duplicate) return null;
+
+    const project: Project = {
+      id: `proj_${crypto.randomUUID()}`,
+      ownerUserId: input.ownerUserId,
+      name: input.name,
+      repo: input.repo.toLowerCase(),
+      repoUrl: input.repoUrl,
+      createdAt: nowIso(),
+    };
+    this.projects.set(project.id, project);
+    return structuredClone(project);
+  }
+
+  async listProjectsForUser(ownerUserId: string): Promise<Project[]> {
+    return [...this.projects.values()]
+      .filter((project) => project.ownerUserId === ownerUserId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((project) => structuredClone(project));
+  }
+
+  async getProjectForUser(
+    id: string,
+    ownerUserId: string,
+  ): Promise<Project | null> {
+    const project = this.projects.get(id);
+    return project?.ownerUserId === ownerUserId
+      ? structuredClone(project)
+      : null;
   }
 
   async ping(): Promise<void> {}

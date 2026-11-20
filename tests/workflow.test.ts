@@ -36,6 +36,7 @@ function makeConfig(overrides: Partial<FactoryConfig> = {}): FactoryConfig {
     apiToken: "test-api-token-123456",
     dataDir: "/tmp/software-factory-test",
     pollIntervalMs: 1000,
+    prPolling: false,
     workerIntervalMs: 1000,
     stepTimeoutMs: 5000,
     testTimeoutMs: 5000,
@@ -58,7 +59,9 @@ function makeConfig(overrides: Partial<FactoryConfig> = {}): FactoryConfig {
       startupTimeoutMs: 1000,
     },
     github: {
-      token: "token",
+      appId: "123456",
+      privateKey: "test-key",
+      slug: "software-factory-test",
       apiUrl: "https://api.github.com",
       draft: false,
       labels: {
@@ -72,7 +75,6 @@ function makeConfig(overrides: Partial<FactoryConfig> = {}): FactoryConfig {
     git: {
       authorName: "Factory",
       authorEmail: "factory@example.com",
-      token: "token",
     },
     ...overrides,
   };
@@ -185,13 +187,28 @@ function setup(options: {
 }
 
 async function createRun(store: MemoryRunStore): Promise<Run> {
+  const project = await ensureProject(store);
   const run = await store.createRun(TICKET, {
     ownerUserId: "usr_test",
+    projectId: project.id,
     repoUrl: "https://github.com/acme/app.git",
     baseBranch: "main",
   });
   if (!run) throw new Error("run was not created");
   return run;
+}
+
+async function ensureProject(store: MemoryRunStore) {
+  const existing = await store.listProjectsForUser("usr_test");
+  if (existing[0]) return existing[0];
+  const project = await store.createProject({
+    ownerUserId: "usr_test",
+    name: "Acme app",
+    repo: "acme/app",
+    repoUrl: "https://github.com/acme/app.git",
+  });
+  if (!project) throw new Error("project was not created");
+  return project;
 }
 
 const VERIFY_PASS = JSON.stringify({

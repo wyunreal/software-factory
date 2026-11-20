@@ -5,7 +5,7 @@ import type { FactoryConfig } from "../config.ts";
 import { repositoryFromUrl } from "../config.ts";
 import type { CommitResult, Run } from "../domain/types.ts";
 import { slugify } from "../domain/ticket.ts";
-import type { WorkspacePort } from "../ports.ts";
+import type { WorkspacePort, GitHubAuthPort } from "../ports.ts";
 import type { Logger } from "../logger.ts";
 import { truncate } from "../util.ts";
 import { BlockedError } from "../errors.ts";
@@ -37,6 +37,7 @@ export class GitWorkspace implements WorkspacePort {
 
   constructor(
     private readonly config: FactoryConfig,
+    private readonly auth: GitHubAuthPort,
     private readonly logger: Logger,
   ) {
     this.gitEnv = {
@@ -54,16 +55,18 @@ export class GitWorkspace implements WorkspacePort {
 
     const repoDir = this.repoDirFor(repoUrl);
     if (existsSync(join(repoDir, ".git"))) {
-      await this.git(["fetch", "--prune", "origin"], repoDir, { auth: true });
+      const token = await this.tokenFor(repoUrl);
+      await this.git(["fetch", "--prune", "origin"], repoDir, { token });
       return repoDir;
     }
 
     mkdirSync(join(this.config.dataDir, "repos"), { recursive: true });
     this.logger.info("cloning target repository", { repo: repoUrl });
+    const token = await this.tokenFor(repoUrl);
     await this.git(
       ["clone", "--origin", "origin", repoUrl, repoDir],
       this.config.dataDir,
-      { auth: true },
+      { token },
     );
     await this.git(
       ["config", "user.name", this.config.git.authorName],
@@ -165,7 +168,7 @@ export class GitWorkspace implements WorkspacePort {
     await this.git(
       ["push", "--force", "origin", `HEAD:refs/heads/${run.branch}`],
       run.worktree,
-      { auth: true },
+      { token: await this.tokenFor(run.repoUrl) },
     );
   }
 
@@ -195,8 +198,13 @@ export class GitWorkspace implements WorkspacePort {
     return Number.parseInt(result.stdout.trim(), 10) || 0;
   }
 
-  private authArgs(): string[] {
-    const token = this.config.git.token;
+  private async tokenFor(repoUrl: string): Promise<string | null> {
+    const repo = repositoryFromUrl(repoUrl);
+    if (!repo) return null;
+    return this.auth.tokenForRepository(repo);
+  }
+
+  private authArgs(token: string | null): string[] {
     if (!token) return [];
     const encoded = Buffer.from(`x-access-token:${token}`).toString("base64");
     return ["-c", `http.extraheader=AUTHORIZATION: basic ${encoded}`];
@@ -205,7 +213,7 @@ export class GitWorkspace implements WorkspacePort {
   private async git(
     args: string[],
     cwd: string,
-    options: { allowFailure?: boolean; auth?: boolean } = {},
+    options: { allowFailure?: boolean; token?: string | null } = {},
   ): Promise<ExecResult> {
     return this.exec(args, cwd, options);
   }
@@ -213,12 +221,12 @@ export class GitWorkspace implements WorkspacePort {
   private async exec(
     args: string[],
     cwd: string,
-    options: { allowFailure?: boolean; auth?: boolean } = {},
+    options: { allowFailure?: boolean; token?: string | null } = {},
   ): Promise<ExecResult> {
     const fullArgs = [
       "-c",
       "safe.directory=*",
-      ...(options.auth ? this.authArgs() : []),
+      ...(options.token ? this.authArgs(options.token) : []),
       ...args,
     ];
     this.logger.debug("git", { args: args.join(" "), cwd });

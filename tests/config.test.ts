@@ -46,7 +46,9 @@ describe("repository URL parsing", () => {
 
 const baseEnv = {
   DATABASE_URL: "postgres://factory:factory@localhost:5432/factory",
-  GITHUB_TOKEN: "ghp_test",
+  GITHUB_APP_ID: "123456",
+  GITHUB_APP_PRIVATE_KEY: "test-private-key",
+  GITHUB_APP_SLUG: "software-factory-test",
   OPENCODE_SERVER_PASSWORD: "secret",
   FACTORY_OPENCODE_URL: "http://opencode:4096",
   FACTORY_API_TOKEN: "test-api-token-123456",
@@ -67,6 +69,7 @@ describe("configuration", () => {
     expect(config.feedbackUsers).toEqual([]);
     expect(config.maxRework).toBe(3);
     expect(config.apiToken).toBe("test-api-token-123456");
+    expect(config.prPolling).toBe(false);
   });
 
   test("reports all missing required values at once", () => {
@@ -77,7 +80,9 @@ describe("configuration", () => {
       expect(error).toBeInstanceOf(ConfigError);
       const problems = (error as ConfigError).problems.join("\n");
       expect(problems).toContain("DATABASE_URL");
-      expect(problems).toContain("GITHUB_TOKEN");
+      expect(problems).toContain("GITHUB_APP_ID");
+      expect(problems).toContain("GITHUB_APP_SLUG");
+      expect(problems).toContain("GITHUB_APP_PRIVATE_KEY");
       expect(problems).toContain("OPENCODE_SERVER_PASSWORD");
       expect(problems).toContain("FACTORY_OPENCODE_URL");
       expect(problems).toContain("FACTORY_API_TOKEN");
@@ -90,12 +95,21 @@ describe("configuration", () => {
     ).toThrow(ConfigError);
   });
 
-  test("local delivery still requires GitHub for the issue backlog", () => {
+  test("accepts a base64-encoded GitHub App private key", () => {
+    const config = loadConfig({
+      ...baseEnv,
+      GITHUB_APP_PRIVATE_KEY: "",
+      GITHUB_APP_PRIVATE_KEY_BASE64: Buffer.from("test-pem").toString("base64"),
+    });
+    expect(config.github.privateKey).toBe("test-pem");
+  });
+
+  test("local delivery still requires the GitHub App for the issue backlog", () => {
     expect(() =>
       loadConfig({
         ...baseEnv,
         FACTORY_DELIVERY_MODE: "local",
-        GITHUB_TOKEN: "",
+        GITHUB_APP_ID: "",
       }),
     ).toThrow(ConfigError);
 
@@ -104,7 +118,7 @@ describe("configuration", () => {
       FACTORY_DELIVERY_MODE: "local",
     });
     expect(config.deliveryMode).toBe("local");
-    expect(config.github.token).toBe("ghp_test");
+    expect(config.github.appId).toBe("123456");
   });
 
   test("custom labels are loaded", () => {
@@ -126,9 +140,11 @@ describe("configuration", () => {
       ...baseEnv,
       FACTORY_AUTO_MERGE: "true",
       FACTORY_MERGE_METHOD: "rebase",
+      FACTORY_PR_POLLING: "true",
     });
     expect(config.autoMerge).toBe(true);
     expect(config.mergeMethod).toBe("rebase");
+    expect(config.prPolling).toBe(true);
     expect(() =>
       loadConfig({ ...baseEnv, FACTORY_MERGE_METHOD: "octopus" }),
     ).toThrow(ConfigError);

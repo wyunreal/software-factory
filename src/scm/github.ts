@@ -3,6 +3,7 @@ import type {
   AutoMergePort,
   DeliveryPort,
   FeedbackPort,
+  GitHubAuthPort,
   PullRequestConversationComment,
   PullRequestInput,
   PullRequestReview,
@@ -54,6 +55,7 @@ type GitHubPullRequest = {
 export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort {
   constructor(
     private readonly config: GithubConfig,
+    private readonly auth: GitHubAuthPort,
     private readonly logger: Logger,
   ) {}
 
@@ -73,6 +75,7 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
     }
 
     const created = await this.request<PullRequest>(
+      repository,
       `/repos/${repository}/pulls`,
       "POST",
       {
@@ -92,6 +95,7 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
     number: number,
   ): Promise<PullRequestState> {
     const pr = await this.request<GitHubPullRequest>(
+      repository,
       `/repos/${repository}/pulls/${number}`,
       "GET",
     );
@@ -111,6 +115,7 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
     number: number,
   ): Promise<PullRequestReview[]> {
     const reviews = await this.request<GitHubReview[]>(
+      repository,
       `/repos/${repository}/pulls/${number}/reviews?per_page=100`,
       "GET",
     );
@@ -128,6 +133,7 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
     number: number,
   ): Promise<PullRequestReviewComment[]> {
     const comments = await this.request<GitHubReviewComment[]>(
+      repository,
       `/repos/${repository}/pulls/${number}/comments?per_page=100`,
       "GET",
     );
@@ -148,6 +154,7 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
     number: number,
   ): Promise<PullRequestConversationComment[]> {
     const comments = await this.request<GitHubConversationComment[]>(
+      repository,
       `/repos/${repository}/issues/${number}/comments?per_page=100`,
       "GET",
     );
@@ -167,6 +174,7 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
     body: string,
   ): Promise<{ id: number }> {
     const result = await this.request<{ id?: number }>(
+      repository,
       `/repos/${repository}/pulls/${number}/comments/${commentId}/replies`,
       "POST",
       { body },
@@ -180,6 +188,7 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
     body: string,
   ): Promise<{ id: number }> {
     const result = await this.request<{ id?: number }>(
+      repository,
       `/repos/${repository}/issues/${number}/comments`,
       "POST",
       { body },
@@ -194,6 +203,7 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
   ): Promise<void> {
     if (reviewers.length === 0) return;
     await this.request(
+      repository,
       `/repos/${repository}/pulls/${number}/requested_reviewers`,
       "POST",
       { reviewers },
@@ -207,6 +217,7 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
     sha: string,
   ): Promise<void> {
     const result = await this.request<{ merged?: boolean; message?: string }>(
+      repository,
       `/repos/${repository}/pulls/${number}/merge`,
       "PUT",
       { merge_method: method, sha },
@@ -228,6 +239,7 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
       state: "open",
     });
     const pulls = await this.request<PullRequest[]>(
+      repository,
       `/repos/${repository}/pulls?${params}`,
       "GET",
     );
@@ -235,14 +247,16 @@ export class GitHubDelivery implements DeliveryPort, AutoMergePort, FeedbackPort
   }
 
   private async request<T>(
+    repository: string,
     path: string,
     method: string,
     body?: unknown,
   ): Promise<T> {
+    const token = await this.auth.tokenForRepository(repository);
     const response = await fetch(`${this.config.apiUrl}${path}`, {
       method,
       headers: {
-        Authorization: `Bearer ${this.config.token}`,
+        Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "software-factory",
