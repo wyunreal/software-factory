@@ -91,13 +91,14 @@ export class PostgresRunStore implements RunStore {
   }
 
   async listHumanReviewRunsForRepository(repo: string): Promise<Run[]> {
+    // HUMAN_REVIEW is terminal for automation and therefore has finished_at
+    // set, but the run still accepts PR activity (reviews, comments, merge).
     const { rows } = await this.pool.query<Row>(
       `SELECT r.* FROM runs r
         JOIN projects p
           ON p.id = r.project_id AND p.owner_user_id = r.owner_user_id
        WHERE lower(p.repo) = lower($1)
          AND r.state = 'HUMAN_REVIEW'
-         AND r.finished_at IS NULL
        ORDER BY r.created_at ASC`,
       [repo],
     );

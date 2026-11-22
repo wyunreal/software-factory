@@ -46,7 +46,10 @@ async function humanReviewRun(store: MemoryRunStore) {
   ] as const) {
     await store.transition(run.id, state, {
       ...(state === "HUMAN_REVIEW"
-        ? { prUrl: "https://github.com/acme/app/pull/1" }
+        ? {
+            prUrl: "https://github.com/acme/app/pull/1",
+            finishedAt: new Date().toISOString(),
+          }
         : {}),
     });
   }

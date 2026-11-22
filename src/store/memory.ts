@@ -83,11 +83,12 @@ export class MemoryRunStore implements RunStore {
   }
 
   async listHumanReviewRunsForRepository(repo: string): Promise<Run[]> {
+    // HUMAN_REVIEW is terminal for automation and therefore has finishedAt
+    // set, but the run still accepts PR activity (reviews, comments, merge).
     return [...this.runs.values()]
       .filter(
         (run) =>
           run.state === "HUMAN_REVIEW" &&
-          run.finishedAt === null &&
           run.ticket.repo?.toLowerCase() === repo.toLowerCase(),
       )
       .map((run) => structuredClone(run));

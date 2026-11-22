@@ -156,7 +156,10 @@ async function humanReviewRun(store: MemoryRunStore, projectId: string) {
   ] as const) {
     await store.transition(run.id, state, {
       ...(state === "HUMAN_REVIEW"
-        ? { prUrl: "https://github.com/acme/app/pull/42" }
+        ? {
+            prUrl: "https://github.com/acme/app/pull/42",
+            finishedAt: new Date().toISOString(),
+          }
         : {}),
     });
   }
@@ -318,12 +321,15 @@ describe("projects", () => {
 });
 
 describe("GitHub events", () => {
-  test("enqueues a pr_sync for a run matching the webhook PR", async () => {
+  test("enqueues a pr_sync for a finished HUMAN_REVIEW run matching the webhook PR", async () => {
     const port = 18700 + Math.floor(Math.random() * 90);
     const { server, store } = await setup(port);
     try {
       const project = await createProject(store, USER_A);
       const run = await humanReviewRun(store, project.id);
+      const humanReview = await store.getRun(run.id);
+      expect(humanReview?.state).toBe("HUMAN_REVIEW");
+      expect(humanReview?.finishedAt).not.toBeNull();
 
       const response = await fetch(
         `http://127.0.0.1:${port}/api/github/events`,
