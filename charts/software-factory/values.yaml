@@ -71,9 +71,13 @@ web:
   # proxies to 127.0.0.1:<nodePort> on the k3s host. Do not forward this port
   # from the router: the public entry point is the Tailscale Funnel hostname,
   # and only /api/github/webhook is mounted there.
+  #
+  # NodePorts are cluster-wide, so this value must be free in every namespace.
+  # 30080 is already assigned to media-streaming/media-qbittorrent in this
+  # cluster; use another free port such as 30081.
   tailscaleFunnel:
     enabled: true
-    nodePort: 30080
+    nodePort: 30081
 
 postgres:
   image:
@@ -132,7 +136,7 @@ config:
   # a private address). Poll PR state, reviews, comments and merges instead.
   # Switch back to "false" once the webapp is publicly reachable and webhook
   # deliveries succeed.
-  FACTORY_PR_POLLING: "true"
+  FACTORY_PR_POLLING: "false"
   FACTORY_PR_DRAFT: "false"
   # Opt-in auto-merge only after a real human APPROVED review. Keep this in
   # sync with the GitHub App review policy.

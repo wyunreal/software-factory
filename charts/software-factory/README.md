@@ -6,7 +6,7 @@ This chart deploys the complete Software Factory stack into the
 | Workload | Service | Exposure |
 | --- | --- | --- |
 | Next.js webapp | `web:8080` | HTTPS Ingress (the only public workload) |
-| Webhook NodePort | `web-webhook:30080` | Optional, loopback target for host-level Tailscale Funnel |
+| Webhook NodePort | `web-webhook:30081` | Optional, loopback target for host-level Tailscale Funnel |
 | Factory orchestrator | `factory:3000` | ClusterIP only |
 | OpenCode runtime | `opencode:4096` | ClusterIP only |
 | PostgreSQL 17 | `postgres:5432` | ClusterIP only |
@@ -53,22 +53,40 @@ helm upgrade --install software-factory ./charts/software-factory \
 ```
 
 Normally you use `./scripts/deploy-remote-k3s.sh <user> <host>`, which seals the
-secrets, builds the images, imports them into k3s and runs Helm.
+secrets, builds the images, imports them into k3s and runs Helm. Add `--prune`
+to remove old `software-factory`/`software-factory-web` image tags after a
+successful rollout, keeping the current and previous versions.
 
 ## Tailscale Funnel
 
 `web.tailscaleFunnel.enabled` creates the `web-webhook` NodePort Service. It
 exists so a host-level Tailscale Funnel can proxy the public GitHub webhook to
-`http://127.0.0.1:30080/api/github/webhook` without exposing the factory API or
+`http://127.0.0.1:30081/api/github/webhook` without exposing the factory API or
 the rest of the webapp.
 
-Run the Funnel command on the k3s host, not in this chart:
+Run the helper from the repository root:
 
 ```bash
-sudo tailscale funnel --bg --https=443 \
-  --set-path=/api/github/webhook \
-  http://127.0.0.1:30080/api/github/webhook
+./scripts/enable-tailscale-funnel.sh <REMOTE_USER> <REMOTE_HOST>
 ```
+
+Or enable it as part of a deployment:
+
+```bash
+./scripts/deploy-remote-k3s.sh --funnel <REMOTE_USER> <REMOTE_HOST>
+```
+
+The manual equivalent on the k3s host is:
+
+```bash
+sudo tailscale funnel --bg --https=8443 \
+  --set-path=/api/github/webhook \
+  http://127.0.0.1:30081/api/github/webhook
+```
+
+The public webhook URL includes the port:
+`https://<host>.<tailnet>.ts.net:8443/api/github/webhook`. The cluster uses 8443
+because 443 is already used by other host services.
 
 Do not forward the NodePort from the router. Only the Funnel hostname is public,
 and only the mounted webhook path is routed.

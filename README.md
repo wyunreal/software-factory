@@ -110,6 +110,8 @@ and is gitignored.
 ```bash
 ./scripts/install-sealed-secrets.sh   # once per cluster
 ./scripts/deploy-remote-k3s.sh <REMOTE_USER> <REMOTE_HOST>
+# add --funnel to also enable the host-level Tailscale Funnel for webhooks
+# add --prune to remove old software-factory images after a successful rollout
 ```
 
 See [Kubernetes / k3s](docs/kubernetes.md) for prerequisites, DNS, the full

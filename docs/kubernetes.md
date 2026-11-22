@@ -201,25 +201,44 @@ enable **MagicDNS** and **HTTPS Certificates**, and allow Funnel for the node
 (`nodeAttrs` with `autogroup:member`, or the node's tag).
 
 The chart creates `web-webhook` when `web.tailscaleFunnel.enabled=true`
-(`nodePort: 30080` by default). On the k3s host:
+(`nodePort: 30081` by default). The helper script performs the host-side
+configuration, including a preflight that the NodePort answers with `401`:
+
+```bash
+./scripts/enable-tailscale-funnel.sh wyunreal 192.168.68.50
+```
+
+Or run it as part of a deployment:
+
+```bash
+./scripts/deploy-remote-k3s.sh --funnel wyunreal 192.168.68.50
+```
+
+The helper refuses to mix the webhook mount with unrelated Tailscale
+serve/funnel mounts and uses `sudo` for the Funnel command.
+
+The manual equivalent on the k3s host is:
 
 ```bash
 # The NodePort must answer locally before configuring Funnel.
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
-  http://127.0.0.1:30080/api/github/webhook
+  http://127.0.0.1:30081/api/github/webhook
 # 401: wrong signature, which means the webapp received the request.
 
-sudo tailscale funnel --bg --https=443 \
+sudo tailscale funnel --bg --https=8443 \
   --set-path=/api/github/webhook \
-  http://127.0.0.1:30080/api/github/webhook
+  http://127.0.0.1:30081/api/github/webhook
 
 tailscale funnel status
 ```
 
+This cluster uses HTTPS port **8443** because 443 is already used by other host
+services. Funnel supports only 443, 8443 and 10000.
+
 The public URL is:
 
 ```text
-https://<host>.<tailnet>.ts.net/api/github/webhook
+https://<host>.<tailnet>.ts.net:8443/api/github/webhook
 ```
 
 Verify from a device outside the tailnet (for example, a phone on mobile data):
@@ -241,6 +260,20 @@ the Funnel is verified.
 ```bash
 ./scripts/deploy-remote-k3s.sh wyunreal 192.168.68.50
 ```
+
+Each deploy imports new image tags into k3s and leaves the old ones in
+containerd. To keep only the current and previous versions after a successful
+rollout:
+
+```bash
+./scripts/deploy-remote-k3s.sh --prune wyunreal 192.168.68.50
+```
+
+`--prune` waits for the factory, web and opencode rollouts, then removes only
+old `software-factory` and `software-factory-web` tags. It never touches other
+images. Do not use `crictl rmi --prune` instead: it can delete other locally
+imported images that are not in a registry, such as `cd-manager` or
+`composite-video-parser`.
 
 ### Change non-secret configuration
 

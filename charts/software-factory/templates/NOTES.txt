@@ -11,13 +11,19 @@ Tailscale Funnel target on the k3s host:
 
   http://127.0.0.1:{{ .Values.web.tailscaleFunnel.nodePort }}/api/github/webhook
 
-Configure it with:
+Configure it with the helper from the repository root:
 
-  sudo tailscale funnel --bg --https=443 \
+  ./scripts/enable-tailscale-funnel.sh <REMOTE_USER> <REMOTE_HOST>
+
+Or run the Funnel command directly on the k3s host:
+
+  sudo tailscale funnel --bg --https=8443 \
     --set-path=/api/github/webhook \
     http://127.0.0.1:{{ .Values.web.tailscaleFunnel.nodePort }}/api/github/webhook
 
-Then point the GitHub App webhook at the Funnel hostname. Only that path is
+The public URL uses port 8443 because 443 is already used by other host
+services. Then point the GitHub App webhook at
+https://<host>.<tailnet>.ts.net:8443/api/github/webhook. Only that path is
 mounted; do not forward the NodePort from the router.
 {{- end }}
 

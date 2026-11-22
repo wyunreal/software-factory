@@ -5,10 +5,20 @@ set -euo pipefail
 # cluster over SSH, apply the SealedSecret and deploy/upgrade the Helm release.
 #
 # Usage:
-#   ./scripts/deploy-remote-k3s.sh <REMOTE_USER> <REMOTE_HOST>
+#   ./scripts/deploy-remote-k3s.sh [--funnel] [--prune] <REMOTE_USER> <REMOTE_HOST>
 #
-# Example:
+# Examples:
 #   ./scripts/deploy-remote-k3s.sh wyunreal 192.168.68.50
+#   ./scripts/deploy-remote-k3s.sh --funnel wyunreal 192.168.68.50
+#   ./scripts/deploy-remote-k3s.sh --prune wyunreal 192.168.68.50
+#
+# --funnel enables the host-level Tailscale Funnel for the GitHub webhook after
+# the Helm upgrade. It requires the web-webhook NodePort and a Tailscale node
+# allowed to use Funnel.
+#
+# --prune removes old software-factory and software-factory-web images from the
+# k3s containerd store after a successful rollout, keeping the current and
+# previous versions. It never touches other images.
 #
 # Prerequisites:
 #   - Docker running locally
@@ -30,23 +40,38 @@ SEALED_SECRET_FILE="${CHART_PATH}/sealed-secret.yaml"
 SECRET_NAME="software-factory-secrets"
 
 usage() {
-    echo "Usage: $0 <REMOTE_USER> <REMOTE_HOST>"
+    echo "Usage: $0 [--funnel] [--prune] <REMOTE_USER> <REMOTE_HOST>"
     echo "Example: $0 wyunreal 192.168.68.50"
+    echo "         $0 --funnel wyunreal 192.168.68.50"
+    echo "         $0 --prune wyunreal 192.168.68.50"
 }
-
-if [ "$#" -ne 2 ]; then
-    usage
-    exit 1
-fi
-
-REMOTE_USER="$1"
-REMOTE_HOST="$2"
-REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 
 fail() {
     echo "Error: $*" >&2
     exit 1
 }
+
+ENABLE_FUNNEL=0
+PRUNE_OLD_IMAGES=0
+POSITIONAL=()
+for arg in "$@"; do
+    case "${arg}" in
+        --funnel) ENABLE_FUNNEL=1 ;;
+        --prune) PRUNE_OLD_IMAGES=1 ;;
+        -h|--help) usage; exit 0 ;;
+        --*) fail "unknown option: ${arg}" ;;
+        *) POSITIONAL+=("${arg}") ;;
+    esac
+done
+
+if [ "${#POSITIONAL[@]}" -ne 2 ]; then
+    usage
+    exit 1
+fi
+
+REMOTE_USER="${POSITIONAL[0]}"
+REMOTE_HOST="${POSITIONAL[1]}"
+REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 
 secret_has_key() {
     local key="$1"
@@ -58,7 +83,7 @@ secret_has_key() {
 # ---------------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------------
-for command in docker kubectl helm npm scp ssh kubeseal; do
+for command in base64 docker kubectl helm npm scp ssh kubeseal; do
     command -v "${command}" >/dev/null 2>&1 || fail "${command} is not installed"
 done
 
@@ -179,6 +204,10 @@ transfer_image "${WEB_IMAGE_NAME}:${IMAGE_TAG}" "software-factory-web-image-${IM
 # ---------------------------------------------------------------------------
 # Helm
 # ---------------------------------------------------------------------------
+PREVIOUS_IMAGE_TAG="$(kubectl -n "${NAMESPACE}" get deployment software-factory-factory \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null \
+    | awk -F: 'NF {print $NF}' || true)"
+
 echo "⚓ Deploying with Helm..."
 helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
     --namespace "${NAMESPACE}" \
@@ -188,10 +217,59 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART_PATH}" \
     --set secrets.existingSecret="${SECRET_NAME}" \
     -f "${CHART_PATH}/values.yaml"
 
+if [ "${PRUNE_OLD_IMAGES}" = "1" ]; then
+    echo ""
+    echo "⏳ Waiting for rollouts before pruning old images..."
+    kubectl -n "${NAMESPACE}" rollout status deploy/software-factory-factory --timeout=300s
+    kubectl -n "${NAMESPACE}" rollout status deploy/software-factory-web --timeout=300s
+    kubectl -n "${NAMESPACE}" rollout status deploy/software-factory-opencode --timeout=300s
+
+    if [ -n "${PREVIOUS_IMAGE_TAG}" ]; then
+        echo "🧹 Pruning old software-factory images (keeping ${IMAGE_TAG} and ${PREVIOUS_IMAGE_TAG})..."
+    else
+        echo "🧹 Pruning old software-factory images (keeping ${IMAGE_TAG})..."
+    fi
+
+    # Pass the prune script as a base64 argument so ssh keeps the local
+    # terminal as stdin. A heredoc would make `ssh -t` skip the pty and sudo
+    # would be unable to prompt for a password.
+    REMOTE_SCRIPT_B64="$(
+        base64 <<'REMOTE_SCRIPT' | tr -d '\n'
+set -euo pipefail
+keep_current="$1"
+keep_previous="${2:-}"
+refs="$(k3s ctr images ls -q | grep -E '^(docker\.io/library/)?software-factory(-web)?:' || true)"
+while IFS= read -r ref; do
+    [ -n "${ref}" ] || continue
+    tag="${ref##*:}"
+    if [ "${tag}" = "${keep_current}" ] || { [ -n "${keep_previous}" ] && [ "${tag}" = "${keep_previous}" ]; }; then
+        continue
+    fi
+    if k3s ctr images rm "${ref}"; then
+        echo "Removed ${ref}"
+    else
+        echo "Warning: could not remove ${ref}" >&2
+    fi
+done <<< "${refs}"
+echo "Remaining software-factory images:"
+k3s ctr images ls -q | grep -E '^(docker\.io/library/)?software-factory(-web)?:' || true
+REMOTE_SCRIPT
+    )"
+
+    ssh -t "${REMOTE}" \
+        "echo '${REMOTE_SCRIPT_B64}' | base64 -d | sudo bash -s -- '${IMAGE_TAG}' '${PREVIOUS_IMAGE_TAG}'"
+fi
+
 echo ""
 echo "✅ Deployment complete! Version: ${IMAGE_TAG}"
 echo ""
 kubectl -n "${NAMESPACE}" get pods,svc,ingress,certificate
+
+if [ "${ENABLE_FUNNEL}" = "1" ]; then
+    echo ""
+    echo "🌐 Enabling Tailscale Funnel..."
+    "${SCRIPT_DIR}/enable-tailscale-funnel.sh" "${REMOTE_USER}" "${REMOTE_HOST}"
+fi
 
 WEB_HOST="$(kubectl -n "${NAMESPACE}" get ingress \
     -l "app.kubernetes.io/instance=${RELEASE_NAME}" \
